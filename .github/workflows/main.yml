@@ -21,10 +21,10 @@ jobs:
       - name: Build (rootless, for Dopamine)
         run: |
           export THEOS="$HOME/theos"
-          cd ClassicPod
+          chmod 755 layout/DEBIAN/postinst
           THEOS_PACKAGE_SCHEME=rootless gmake package FINALPACKAGE=1
 
       - uses: actions/upload-artifact@v4
         with:
           name: ClassicPod-deb
-          path: ClassicPod/packages/*.deb
+          path: packages/*.deb
