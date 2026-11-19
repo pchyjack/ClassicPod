@@ -1,0 +1,9 @@
+Package: com.example.classicpod
+Name: iPod
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: Classic click wheel iPod music player for your music library
+Maintainer: You <you@example.com>
+Author: You <you@example.com>
+Section: Applications
+Depends: firmware (>= 15.0)
