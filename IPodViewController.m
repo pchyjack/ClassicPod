@@ -14,7 +14,10 @@ static NSString *const kClickerKey = @"ClickerEnabled";
 @property (nonatomic, strong) IPScreenView *screenView;
 @property (nonatomic, strong) ClickWheelView *wheel;
 @property (nonatomic, strong) MPVolumeView *volumeView;
-@property (nonatomic, strong) MPMusicPlayerController *player;
+@property (nonatomic, strong) MPMusicPlayerController *player;   // nil until the first song is played
+@property (nonatomic) BOOL hasQueue;
+@property (nonatomic) MPMusicShuffleMode shuffleSetting;
+@property (nonatomic) MPMusicRepeatMode repeatSetting;
 @property (nonatomic, strong) NSMutableArray<IPMenu *> *stack;
 @property (nonatomic, strong) NSTimer *tickTimer;
 @property (nonatomic, strong) NSTimer *bottomModeTimer;
@@ -58,25 +61,11 @@ static NSString *const kClickerKey = @"ClickerEnabled";
     self.wheel.delegate = self;
     [self.view addSubview:self.wheel];
 
-    // Hidden volume view: lets the wheel change the system volume.
-    self.volumeView = [[MPVolumeView alloc] initWithFrame:CGRectMake(-2000, -2000, 200, 40)];
-    [self.view addSubview:self.volumeView];
+    self.shuffleSetting = MPMusicShuffleModeOff;
+    self.repeatSetting = MPMusicRepeatModeNone;
 
-    // Audio
-    AVAudioSession *session = [AVAudioSession sharedInstance];
-    [session setCategory:AVAudioSessionCategoryPlayback error:nil];
-    [session setActive:YES error:nil];
-
-    self.player = [MPMusicPlayerController applicationMusicPlayer];
-    [self.player beginGeneratingPlaybackNotifications];
-
-    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
-    [nc addObserver:self selector:@selector(playerChanged)
-               name:MPMusicPlayerControllerNowPlayingItemDidChangeNotification object:self.player];
-    [nc addObserver:self selector:@selector(playerChanged)
-               name:MPMusicPlayerControllerPlaybackStateDidChangeNotification object:self.player];
-    [nc addObserver:self selector:@selector(batteryChanged)
-               name:UIDeviceBatteryLevelDidChangeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(batteryChanged)
+                                                 name:UIDeviceBatteryLevelDidChangeNotification object:nil];
 
     // Menus
     self.stack = [NSMutableArray array];
@@ -127,7 +116,7 @@ static NSString *const kClickerKey = @"ClickerEnabled";
     return [IPMenu menuWithTitle:@"iPod" builder:^NSArray<IPMenuItem *> *{
         NSMutableArray *a = [NSMutableArray array];
         [a addObject:[IPMenuItem itemWithTitle:@"Music" hasChildren:YES action:^{ [self pushMusicMenu]; }]];
-        if (self.player.nowPlayingItem) {
+        if (self.hasQueue) {
             [a addObject:[IPMenuItem itemWithTitle:@"Now Playing" hasChildren:YES action:^{ [self showNowPlaying]; }]];
         }
         [a addObject:[IPMenuItem itemWithTitle:@"Shuffle Songs" hasChildren:NO action:^{ [self shuffleAllSongs]; }]];
@@ -237,21 +226,21 @@ static NSString *const kClickerKey = @"ClickerEnabled";
 - (void)pushSettingsMenu {
     [self pushMenuWithTitle:@"Settings" builder:^NSArray<IPMenuItem *> *{
         BOOL clicker = [[NSUserDefaults standardUserDefaults] boolForKey:kClickerKey];
-        NSString *shuffle = (self.player.shuffleMode == MPMusicShuffleModeOff ||
-                             self.player.shuffleMode == MPMusicShuffleModeDefault) ? @"Off" : @"Songs";
-        MPMusicRepeatMode rm = self.player.repeatMode;
+        BOOL shuffleOn = (self.shuffleSetting == MPMusicShuffleModeSongs);
+        MPMusicRepeatMode rm = self.repeatSetting;
         NSString *repeat = (rm == MPMusicRepeatModeAll) ? @"All" : (rm == MPMusicRepeatModeOne ? @"One" : @"Off");
 
         return @[
-            [IPMenuItem itemWithTitle:@"Shuffle" detail:shuffle action:^{
-                BOOL on = ![shuffle isEqualToString:@"Off"];
-                self.player.shuffleMode = on ? MPMusicShuffleModeOff : MPMusicShuffleModeSongs;
+            [IPMenuItem itemWithTitle:@"Shuffle" detail:(shuffleOn ? @"Songs" : @"Off") action:^{
+                self.shuffleSetting = shuffleOn ? MPMusicShuffleModeOff : MPMusicShuffleModeSongs;
+                if (self.player) self.player.shuffleMode = self.shuffleSetting;
                 [self reloadTopMenu];
             }],
             [IPMenuItem itemWithTitle:@"Repeat" detail:repeat action:^{
-                if (rm == MPMusicRepeatModeAll)      self.player.repeatMode = MPMusicRepeatModeOne;
-                else if (rm == MPMusicRepeatModeOne) self.player.repeatMode = MPMusicRepeatModeNone;
-                else                                 self.player.repeatMode = MPMusicRepeatModeAll;
+                if (rm == MPMusicRepeatModeAll)      self.repeatSetting = MPMusicRepeatModeOne;
+                else if (rm == MPMusicRepeatModeOne) self.repeatSetting = MPMusicRepeatModeNone;
+                else                                 self.repeatSetting = MPMusicRepeatModeAll;
+                if (self.player) self.player.repeatMode = self.repeatSetting;
                 [self reloadTopMenu];
             }],
             [IPMenuItem itemWithTitle:@"Clicker" detail:(clicker ? @"On" : @"Off") action:^{
@@ -274,13 +263,37 @@ static NSString *const kClickerKey = @"ClickerEnabled";
 
 #pragma mark - Playback
 
+- (MPMusicPlayerController *)ensurePlayer {
+    if (!self.player) {
+        AVAudioSession *session = [AVAudioSession sharedInstance];
+        [session setCategory:AVAudioSessionCategoryPlayback error:nil];
+        [session setActive:YES error:nil];
+
+        MPMusicPlayerController *p = [MPMusicPlayerController applicationMusicPlayer];
+        [p beginGeneratingPlaybackNotifications];
+        p.shuffleMode = self.shuffleSetting;
+        p.repeatMode = self.repeatSetting;
+        self.player = p;
+
+        NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+        [nc addObserver:self selector:@selector(playerChanged)
+                   name:MPMusicPlayerControllerNowPlayingItemDidChangeNotification object:p];
+        [nc addObserver:self selector:@selector(playerChanged)
+                   name:MPMusicPlayerControllerPlaybackStateDidChangeNotification object:p];
+    }
+    return self.player;
+}
+
 - (void)playItems:(NSArray<MPMediaItem *> *)items startIndex:(NSUInteger)index shuffle:(BOOL)shuffle {
     if (index >= items.count) return;
+    MPMusicPlayerController *p = [self ensurePlayer];
+    self.hasQueue = YES;
     self.queueCount = (NSInteger)items.count;
-    [self.player setQueueWithItemCollection:[MPMediaItemCollection collectionWithItems:items]];
-    if (shuffle) self.player.shuffleMode = MPMusicShuffleModeSongs;
-    self.player.nowPlayingItem = items[index];
-    [self.player play];
+    if (shuffle) self.shuffleSetting = MPMusicShuffleModeSongs;
+    [p setQueueWithItemCollection:[MPMediaItemCollection collectionWithItems:items]];
+    p.shuffleMode = self.shuffleSetting;
+    p.nowPlayingItem = items[index];
+    [p play];
 }
 
 - (void)shuffleAllSongs {
@@ -291,9 +304,10 @@ static NSString *const kClickerKey = @"ClickerEnabled";
 }
 
 - (void)togglePlayPause {
+    if (!self.player) return;
     if (self.player.playbackState == MPMusicPlaybackStatePlaying) {
         [self.player pause];
-    } else if (self.player.nowPlayingItem) {
+    } else if (self.hasQueue) {
         [self.player play];
     }
 }
@@ -319,6 +333,15 @@ static NSString *const kClickerKey = @"ClickerEnabled";
 
 - (void)updateNowPlaying {
     IPScreenView *s = self.screenView;
+    if (!self.player) {
+        s.nowPlayingItem = nil;
+        s.elapsed = 0;
+        s.duration = 0;
+        s.playing = NO;
+        s.queueIndex = -1;
+        s.queueCount = 0;
+        return;
+    }
     MPMediaItem *item = self.player.nowPlayingItem;
     s.nowPlayingItem = item;
     NSTimeInterval t = self.player.currentPlaybackTime;
@@ -331,6 +354,7 @@ static NSString *const kClickerKey = @"ClickerEnabled";
 }
 
 - (void)tick {
+    if (!self.player) return;
     [self updateNowPlaying];
     [self.screenView setNeedsDisplay];
 }
@@ -360,6 +384,12 @@ static NSString *const kClickerKey = @"ClickerEnabled";
 #pragma mark - Volume / click
 
 - (void)setSystemVolume:(float)volume {
+    if (!self.volumeView) {
+        // Hidden volume view, created only when first needed: lets the wheel change the system volume.
+        self.volumeView = [[MPVolumeView alloc] initWithFrame:CGRectMake(-2000, -2000, 200, 40)];
+        [self.view addSubview:self.volumeView];
+        [self.volumeView layoutIfNeeded];
+    }
     for (UIView *sub in self.volumeView.subviews) {
         if ([sub isKindOfClass:[UISlider class]]) {
             UISlider *slider = (UISlider *)sub;
