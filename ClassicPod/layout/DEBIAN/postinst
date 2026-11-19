@@ -1,7 +1,0 @@
-#!/bin/sh
-if [ -x /var/jb/usr/bin/uicache ]; then
-	/var/jb/usr/bin/uicache -p /var/jb/Applications/ClassicPod.app
-elif command -v uicache >/dev/null 2>&1; then
-	uicache -p /Applications/ClassicPod.app || uicache
-fi
-exit 0
