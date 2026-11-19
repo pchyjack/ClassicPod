@@ -32,4 +32,6 @@ typedef NS_ENUM(NSInteger, IPBottomMode) {
 @property (nonatomic) NSInteger queueCount;
 @property (nonatomic) float volume;           // 0...1, shown in IPBottomModeVolume
 @property (nonatomic) IPBottomMode bottomMode;
+@property (nonatomic) MPMusicShuffleMode shuffleMode; // shuffle icon on Now Playing
+@property (nonatomic) MPMusicRepeatMode repeatMode;     // repeat / repeat-once icon
 @end

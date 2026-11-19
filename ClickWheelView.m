@@ -10,6 +10,9 @@ static const CGFloat kTapRotationLimit = 0.30;      // below this much rotation,
 @property (nonatomic) CGPoint startPoint;
 @property (nonatomic) BOOL startedInCenter;
 @property (nonatomic) BOOL startedInRing;
+@property (nonatomic, strong) NSTimer *holdTimer;
+@property (nonatomic) BOOL holdFired;
+@property (nonatomic) ClickWheelButton holdButton;
 @end
 
 @implementation ClickWheelView
@@ -117,7 +120,36 @@ static const CGFloat kTapRotationLimit = 0.30;      // below this much rotation,
 
 #pragma mark - Touch handling
 
+- (ClickWheelButton)ringButtonForPoint:(CGPoint)p {
+    CGFloat a = [self angleForPoint:p];
+    if (a >= -3 * M_PI_4 && a < -M_PI_4) return ClickWheelButtonMenu;
+    if (a >= -M_PI_4 && a < M_PI_4)      return ClickWheelButtonNext;
+    if (a >= M_PI_4 && a < 3 * M_PI_4)   return ClickWheelButtonPlayPause;
+    return ClickWheelButtonPrevious;
+}
+
+- (void)cancelHoldTimer {
+    [self.holdTimer invalidate];
+    self.holdTimer = nil;
+}
+
+- (void)holdTimerFired {
+    self.holdTimer = nil;
+    self.holdFired = YES;
+    [self.delegate clickWheel:self didHoldButton:self.holdButton];
+}
+
+- (void)endHoldIfNeeded {
+    [self cancelHoldTimer];
+    if (self.holdFired) {
+        self.holdFired = NO;
+        [self.delegate clickWheel:self didEndHoldOfButton:self.holdButton];
+    }
+}
+
 - (void)resetTracking {
+    [self cancelHoldTimer];
+    self.holdFired = NO;
     self.startedInCenter = NO;
     self.startedInRing = NO;
     self.accumulated = 0;
@@ -133,10 +165,18 @@ static const CGFloat kTapRotationLimit = 0.30;      // below this much rotation,
     self.lastAngle = [self angleForPoint:p];
     self.accumulated = 0;
     self.totalRotation = 0;
+    self.holdFired = NO;
+    [self cancelHoldTimer];
+    if (self.startedInCenter || self.startedInRing) {
+        self.holdButton = self.startedInCenter ? ClickWheelButtonCenter : [self ringButtonForPoint:p];
+        self.holdTimer = [NSTimer scheduledTimerWithTimeInterval:0.7 target:self
+                                                        selector:@selector(holdTimerFired)
+                                                        userInfo:nil repeats:NO];
+    }
 }
 
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    if (!self.startedInRing) return;
+    if (!self.startedInRing || self.holdFired) return;
     CGPoint p = [touches.anyObject locationInView:self];
     if ([self distanceForPoint:p] < [self centerRadius] * 0.6) return; // angle is unstable near the middle
 
@@ -147,6 +187,7 @@ static const CGFloat kTapRotationLimit = 0.30;      // below this much rotation,
     self.lastAngle = a;
     self.totalRotation += fabs(delta);
     self.accumulated += delta;
+    if (self.totalRotation >= kTapRotationLimit) [self cancelHoldTimer]; // rotating, not holding
 
     NSInteger steps = (NSInteger)(self.accumulated / kStepAngle);
     if (steps != 0) {
@@ -156,6 +197,12 @@ static const CGFloat kTapRotationLimit = 0.30;      // below this much rotation,
 }
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    if (self.holdFired) {
+        [self endHoldIfNeeded];
+        [self resetTracking];
+        return;
+    }
+    [self cancelHoldTimer];
     CGPoint p = [touches.anyObject locationInView:self];
 
     if (self.startedInCenter) {
@@ -163,18 +210,13 @@ static const CGFloat kTapRotationLimit = 0.30;      // below this much rotation,
             [self.delegate clickWheel:self didPressButton:ClickWheelButtonCenter];
         }
     } else if (self.startedInRing && self.totalRotation < kTapRotationLimit) {
-        CGFloat a = [self angleForPoint:self.startPoint];
-        ClickWheelButton b;
-        if (a >= -3 * M_PI_4 && a < -M_PI_4)      b = ClickWheelButtonMenu;
-        else if (a >= -M_PI_4 && a < M_PI_4)      b = ClickWheelButtonNext;
-        else if (a >= M_PI_4 && a < 3 * M_PI_4)   b = ClickWheelButtonPlayPause;
-        else                                      b = ClickWheelButtonPrevious;
-        [self.delegate clickWheel:self didPressButton:b];
+        [self.delegate clickWheel:self didPressButton:[self ringButtonForPoint:self.startPoint]];
     }
     [self resetTracking];
 }
 
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [self endHoldIfNeeded];
     [self resetTracking];
 }
 

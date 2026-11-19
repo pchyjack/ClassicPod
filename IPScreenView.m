@@ -223,6 +223,15 @@ static NSString *TimeString(NSTimeInterval t) {
                  color:[UIColor colorWithWhite:0.4 alpha:1.0] align:NSTextAlignmentCenter];
     }
 
+    // Shuffle / repeat icons, top right
+    NSString *flags = @"";
+    if (self.shuffleMode == MPMusicShuffleModeSongs || self.shuffleMode == MPMusicShuffleModeAlbums) flags = @"\u21C4";
+    if (self.repeatMode == MPMusicRepeatModeAll) flags = [flags stringByAppendingString:@" \u21BB"];
+    else if (self.repeatMode == MPMusicRepeatModeOne) flags = [flags stringByAppendingString:@" \u21BB1"];
+    [self drawText:flags inRect:CGRectMake(0, body.origin.y + 2, w - pad, lh)
+              font:[UIFont systemFontOfSize:lh * 0.70 weight:UIFontWeightBold]
+             color:[UIColor colorWithWhite:0.25 alpha:1.0] align:NSTextAlignmentRight];
+
     // Artwork
     CGFloat art = MIN(body.size.height * 0.42, 84);
     CGRect artRect = CGRectMake(pad, body.origin.y + lh + 4, art, art);

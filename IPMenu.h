@@ -7,6 +7,7 @@ typedef void (^IPAction)(void);
 @property (nonatomic, copy) NSString *detail;   // right-aligned value, e.g. "On"
 @property (nonatomic, assign) BOOL hasChildren; // draws a ">" chevron
 @property (nonatomic, copy) IPAction action;
+@property (nonatomic, copy) IPAction playAction; // run by the Play/Pause button while highlighted
 + (instancetype)itemWithTitle:(NSString *)title hasChildren:(BOOL)hasChildren action:(IPAction)action;
 + (instancetype)itemWithTitle:(NSString *)title detail:(NSString *)detail action:(IPAction)action;
 @end
