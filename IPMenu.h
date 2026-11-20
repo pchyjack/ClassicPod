@@ -19,6 +19,7 @@ typedef NSArray<IPMenuItem *> *(^IPBuilder)(void);
 @property (nonatomic, copy) IPBuilder builder;
 @property (nonatomic, copy) NSArray<IPMenuItem *> *items;
 @property (nonatomic, assign) NSInteger selectedIndex;
+@property (nonatomic, assign) BOOL returnsToCoverFlow; // Menu button goes back to Cover Flow
 + (instancetype)menuWithTitle:(NSString *)title builder:(IPBuilder)builder;
 - (void)reload; // re-runs the builder, keeping the selection in range
 @end

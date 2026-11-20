@@ -4,13 +4,17 @@
 
 typedef NS_ENUM(NSInteger, IPScreenMode) {
     IPScreenModeMenu,
-    IPScreenModeNowPlaying
+    IPScreenModeNowPlaying,
+    IPScreenModeCoverFlow,
+    IPScreenModeSlider
 };
 
 typedef NS_ENUM(NSInteger, IPBottomMode) {
     IPBottomModeProgress,
     IPBottomModeVolume,
-    IPBottomModeScrub
+    IPBottomModeScrub,
+    IPBottomModeRating,
+    IPBottomModeShuffle
 };
 
 // The LCD. Draws either a menu list or the Now Playing screen.
@@ -34,4 +38,17 @@ typedef NS_ENUM(NSInteger, IPBottomMode) {
 @property (nonatomic) IPBottomMode bottomMode;
 @property (nonatomic) MPMusicShuffleMode shuffleMode; // shuffle icon on Now Playing
 @property (nonatomic) MPMusicRepeatMode repeatMode;     // repeat / repeat-once icon
+@property (nonatomic) NSInteger rating;                  // 0...5 stars
+
+// Cover Flow mode
+@property (nonatomic, strong) NSArray<MPMediaItemCollection *> *coverItems;
+@property (nonatomic) NSInteger coverIndex;
+
+// Slider mode (Brightness, Volume Limit)
+@property (nonatomic) CGFloat sliderValue;   // 0...1
+@property (nonatomic) CGFloat sliderMarker;  // 0...1, or < 0 for none
+@property (nonatomic, copy) NSString *sliderCaption;
+
+// Big letter shown while fast-scrolling a long list
+@property (nonatomic, copy) NSString *overlayLetter;
 @end

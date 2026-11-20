@@ -157,6 +157,7 @@ static const CGFloat kTapRotationLimit = 0.30;      // below this much rotation,
 }
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [self.delegate clickWheelDidBeginTouch:self];
     CGPoint p = [touches.anyObject locationInView:self];
     CGFloat d = [self distanceForPoint:p];
     self.startPoint = p;
@@ -200,6 +201,7 @@ static const CGFloat kTapRotationLimit = 0.30;      // below this much rotation,
     if (self.holdFired) {
         [self endHoldIfNeeded];
         [self resetTracking];
+        [self.delegate clickWheelDidEndTouch:self];
         return;
     }
     [self cancelHoldTimer];
@@ -213,11 +215,13 @@ static const CGFloat kTapRotationLimit = 0.30;      // below this much rotation,
         [self.delegate clickWheel:self didPressButton:[self ringButtonForPoint:self.startPoint]];
     }
     [self resetTracking];
+    [self.delegate clickWheelDidEndTouch:self];
 }
 
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     [self endHoldIfNeeded];
     [self resetTracking];
+    [self.delegate clickWheelDidEndTouch:self];
 }
 
 @end

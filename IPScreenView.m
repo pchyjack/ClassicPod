@@ -12,6 +12,7 @@ static NSString *TimeString(NSTimeInterval t) {
 @property (nonatomic, strong) UIImage *artworkImage;
 @property (nonatomic) MPMediaEntityPersistentID artworkID;
 @property (nonatomic) BOOL hasArtworkID;
+@property (nonatomic, strong) NSCache *coverCache;
 @end
 
 @implementation IPScreenView
@@ -23,8 +24,16 @@ static NSString *TimeString(NSTimeInterval t) {
         self.opaque = YES;
         self.contentMode = UIViewContentModeRedraw;
         self.queueIndex = -1;
+        self.sliderMarker = -1;
+        self.coverCache = [NSCache new];
     }
     return self;
+}
+
+- (void)setCoverItems:(NSArray<MPMediaItemCollection *> *)items {
+    if (_coverItems == items) return;
+    _coverItems = items;
+    [self.coverCache removeAllObjects];
 }
 
 - (void)setNowPlayingItem:(MPMediaItem *)item {
@@ -79,15 +88,23 @@ static NSString *TimeString(NSTimeInterval t) {
     [[UIColor whiteColor] setFill];
     UIRectFill(b);
 
+    if (self.mode == IPScreenModeCoverFlow) {   // Cover Flow fills the whole screen, no title bar
+        [self drawCoverFlowInRect:b ctx:ctx];
+        [self drawOverlayInRect:b];
+        return;
+    }
+
     CGFloat titleH = round(b.size.height / (kVisibleRows + 1));
     [self drawTitleBarInRect:CGRectMake(0, 0, b.size.width, titleH) ctx:ctx];
 
     CGRect body = CGRectMake(0, titleH, b.size.width, b.size.height - titleH);
-    if (self.mode == IPScreenModeMenu) {
-        [self drawMenuInRect:body ctx:ctx];
-    } else {
-        [self drawNowPlayingInRect:body ctx:ctx];
+    switch (self.mode) {
+        case IPScreenModeMenu:       [self drawMenuInRect:body ctx:ctx]; break;
+        case IPScreenModeNowPlaying: [self drawNowPlayingInRect:body ctx:ctx]; break;
+        case IPScreenModeSlider:     [self drawSliderInRect:body ctx:ctx]; break;
+        default: break;
     }
+    [self drawOverlayInRect:body];
 }
 
 - (void)drawTitleBarInRect:(CGRect)r ctx:(CGContextRef)ctx {
@@ -263,6 +280,46 @@ static NSString *TimeString(NSTimeInterval t) {
               font:[UIFont systemFontOfSize:lh * 0.62 weight:UIFontWeightRegular]
              color:[UIColor colorWithWhite:0.45 alpha:1.0] align:NSTextAlignmentLeft];
 
+    CGFloat optY = CGRectGetMaxY(body) - lh * 2.2;
+
+    if (self.rating > 0 && self.bottomMode != IPBottomModeRating) {
+        NSString *stars = [@"" stringByPaddingToLength:(NSUInteger)MIN(5, self.rating) withString:@"\u2605" startingAtIndex:0];
+        [self drawText:stars inRect:CGRectMake(tx, CGRectGetMaxY(artRect) + 2, tw, lh)
+                  font:[UIFont systemFontOfSize:lh * 0.8 weight:UIFontWeightRegular]
+                 color:[UIColor colorWithRed:0.20 green:0.50 blue:0.92 alpha:1.0] align:NSTextAlignmentLeft];
+    }
+
+    if (self.bottomMode == IPBottomModeRating) {
+        NSInteger r = MAX(0, MIN(5, self.rating));
+        NSString *filled = [@"" stringByPaddingToLength:(NSUInteger)r withString:@"\u2605" startingAtIndex:0];
+        NSString *empty = [@"" stringByPaddingToLength:(NSUInteger)(5 - r) withString:@"\u2606" startingAtIndex:0];
+        [self drawText:[filled stringByAppendingString:empty] inRect:CGRectMake(0, optY - 6, w, lh * 1.5)
+                  font:[UIFont systemFontOfSize:lh * 1.2 weight:UIFontWeightRegular]
+                 color:[UIColor colorWithRed:0.20 green:0.50 blue:0.92 alpha:1.0] align:NSTextAlignmentCenter];
+        [self drawText:@"Rating" inRect:CGRectMake(pad, optY + lh * 1.3, w - 2 * pad, lh)
+                  font:[UIFont systemFontOfSize:lh * 0.62 weight:UIFontWeightMedium]
+                 color:[UIColor colorWithWhite:0.3 alpha:1.0] align:NSTextAlignmentCenter];
+        return;
+    }
+
+    if (self.bottomMode == IPBottomModeShuffle) {
+        NSArray<NSString *> *names = @[@"Off", @"Songs", @"Albums"];
+        NSInteger selected = (self.shuffleMode == MPMusicShuffleModeSongs) ? 1 : (self.shuffleMode == MPMusicShuffleModeAlbums ? 2 : 0);
+        CGFloat segW = (w - 2 * pad) / 3.0;
+        for (NSInteger i = 0; i < 3; i++) {
+            CGRect seg = CGRectMake(pad + i * segW + 2, optY - 2, segW - 4, lh * 1.2);
+            UIBezierPath *sp = [UIBezierPath bezierPathWithRoundedRect:seg cornerRadius:4];
+            [(i == selected ? [UIColor colorWithRed:0.20 green:0.50 blue:0.92 alpha:1.0] : [UIColor colorWithWhite:0.90 alpha:1.0]) setFill];
+            [sp fill];
+            [self drawText:names[i] inRect:seg font:[UIFont systemFontOfSize:lh * 0.66 weight:UIFontWeightSemibold]
+                     color:(i == selected ? [UIColor whiteColor] : [UIColor blackColor]) align:NSTextAlignmentCenter];
+        }
+        [self drawText:@"Shuffle" inRect:CGRectMake(pad, optY + lh * 1.3, w - 2 * pad, lh)
+                  font:[UIFont systemFontOfSize:lh * 0.62 weight:UIFontWeightMedium]
+                 color:[UIColor colorWithWhite:0.3 alpha:1.0] align:NSTextAlignmentCenter];
+        return;
+    }
+
     // Progress / volume bar
     CGFloat barY = CGRectGetMaxY(body) - lh * 2.2;
     CGRect bar = CGRectMake(pad, barY, w - 2 * pad, 11);
@@ -312,6 +369,132 @@ static NSString *TimeString(NSTimeInterval t) {
         [self drawText:[@"-" stringByAppendingString:TimeString(self.duration - self.elapsed)]
                 inRect:labelRow font:small color:gray align:NSTextAlignmentRight];
     }
+}
+
+#pragma mark - Slider, Cover Flow, letter overlay
+
+- (void)drawSliderInRect:(CGRect)body ctx:(CGContextRef)ctx {
+    CGFloat w = body.size.width, pad = 24;
+    [self drawText:self.sliderCaption inRect:CGRectMake(0, CGRectGetMidY(body) - 46, w, 24)
+              font:[UIFont systemFontOfSize:15 weight:UIFontWeightBold]
+             color:[UIColor blackColor] align:NSTextAlignmentCenter];
+
+    CGRect bar = CGRectMake(pad, CGRectGetMidY(body) - 6, w - 2 * pad, 12);
+    UIBezierPath *track = [UIBezierPath bezierPathWithRoundedRect:bar cornerRadius:6];
+    [[UIColor colorWithWhite:0.90 alpha:1.0] setFill];
+    [track fill];
+    [[UIColor colorWithWhite:0.55 alpha:1.0] setStroke];
+    track.lineWidth = 1.0;
+    [track stroke];
+
+    CGFloat frac = MAX(0, MIN(1, self.sliderValue));
+    if (frac > 0) {
+        CGRect fill = CGRectInset(bar, 1, 1);
+        fill.size.width = MAX(fill.size.height, fill.size.width * frac);
+        [[UIColor colorWithRed:0.20 green:0.50 blue:0.92 alpha:1.0] setFill];
+        [[UIBezierPath bezierPathWithRoundedRect:fill cornerRadius:fill.size.height / 2.0] fill];
+    }
+
+    if (self.sliderMarker >= 0) { // triangle under the bar marks the limit
+        CGFloat x = bar.origin.x + bar.size.width * MIN(1, self.sliderMarker);
+        UIBezierPath *tri = [UIBezierPath bezierPath];
+        [tri moveToPoint:CGPointMake(x, CGRectGetMaxY(bar) + 3)];
+        [tri addLineToPoint:CGPointMake(x + 6, CGRectGetMaxY(bar) + 13)];
+        [tri addLineToPoint:CGPointMake(x - 6, CGRectGetMaxY(bar) + 13)];
+        [tri closePath];
+        [[UIColor colorWithWhite:0.15 alpha:1.0] setFill];
+        [tri fill];
+    }
+}
+
+- (UIImage *)coverImageAtIndex:(NSInteger)i {
+    UIImage *img = [self.coverCache objectForKey:@(i)];
+    if (!img) {
+        MPMediaItem *rep = self.coverItems[i].representativeItem;
+        img = [rep.artwork imageWithSize:CGSizeMake(120, 120)];
+        if (!img) {
+            UIGraphicsBeginImageContextWithOptions(CGSizeMake(8, 8), YES, 1);
+            [[UIColor colorWithWhite:0.35 alpha:1.0] setFill];
+            UIRectFill(CGRectMake(0, 0, 8, 8));
+            img = UIGraphicsGetImageFromCurrentImageContext();
+            UIGraphicsEndImageContext();
+        }
+        [self.coverCache setObject:img forKey:@(i)];
+    }
+    return img;
+}
+
+- (void)drawCover:(UIImage *)img inRect:(CGRect)r ctx:(CGContextRef)ctx {
+    [img drawInRect:r];
+
+    // Reflection
+    CGRect refl = CGRectMake(r.origin.x, CGRectGetMaxY(r) + 1, r.size.width, r.size.height * 0.45);
+    CGContextSaveGState(ctx);
+    CGContextClipToRect(ctx, refl);
+    CGContextTranslateCTM(ctx, 0, 2 * CGRectGetMaxY(r) + 2);
+    CGContextScaleCTM(ctx, 1, -1);
+    CGContextSetAlpha(ctx, 0.35);
+    [img drawInRect:r];
+    CGContextRestoreGState(ctx);
+
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGFloat fade[8] = {0, 0, 0, 0.25, 0, 0, 0, 1.0};
+    CGGradientRef g = CGGradientCreateWithColorComponents(cs, fade, NULL, 2);
+    CGContextSaveGState(ctx);
+    CGContextClipToRect(ctx, refl);
+    CGContextDrawLinearGradient(ctx, g, refl.origin, CGPointMake(refl.origin.x, CGRectGetMaxY(refl)), 0);
+    CGContextRestoreGState(ctx);
+    CGGradientRelease(g);
+    CGColorSpaceRelease(cs);
+}
+
+- (void)drawCoverFlowInRect:(CGRect)body ctx:(CGContextRef)ctx {
+    [[UIColor blackColor] setFill];
+    UIRectFill(body);
+
+    NSInteger n = (NSInteger)self.coverItems.count;
+    if (n == 0) {
+        [self drawText:@"No Albums" inRect:body font:[UIFont systemFontOfSize:15 weight:UIFontWeightMedium]
+                 color:[UIColor lightGrayColor] align:NSTextAlignmentCenter];
+        return;
+    }
+
+    NSInteger idx = MAX(0, MIN(n - 1, self.coverIndex));
+    CGFloat w = body.size.width, h = body.size.height;
+    CGFloat side = h * 0.46;
+    CGFloat cy = body.origin.y + h * 0.36;
+
+    for (NSInteger k = 3; k >= 1; k--) {            // far covers first so near ones overlap them
+        for (NSInteger dir = -1; dir <= 1; dir += 2) {
+            NSInteger j = idx + dir * k;
+            if (j < 0 || j >= n) continue;
+            CGFloat cw = side * 0.34, ch = side * 0.86;
+            CGFloat cx = w / 2.0 + dir * (side * 0.62 + (k - 1) * side * 0.24);
+            [self drawCover:[self coverImageAtIndex:j] inRect:CGRectMake(cx - cw / 2.0, cy - ch / 2.0, cw, ch) ctx:ctx];
+        }
+    }
+    [self drawCover:[self coverImageAtIndex:idx] inRect:CGRectMake(w / 2.0 - side / 2.0, cy - side / 2.0, side, side) ctx:ctx];
+
+    MPMediaItem *rep = self.coverItems[idx].representativeItem;
+    CGFloat lineH = h * 0.10;
+    [self drawText:rep.albumTitle ?: @"Unknown Album"
+            inRect:CGRectMake(8, CGRectGetMaxY(body) - lineH * 2 - 2, w - 16, lineH)
+              font:[UIFont systemFontOfSize:lineH * 0.78 weight:UIFontWeightBold]
+             color:[UIColor whiteColor] align:NSTextAlignmentCenter];
+    [self drawText:rep.artist ?: @"Unknown Artist"
+            inRect:CGRectMake(8, CGRectGetMaxY(body) - lineH - 2, w - 16, lineH)
+              font:[UIFont systemFontOfSize:lineH * 0.70 weight:UIFontWeightRegular]
+             color:[UIColor colorWithWhite:0.7 alpha:1.0] align:NSTextAlignmentCenter];
+}
+
+- (void)drawOverlayInRect:(CGRect)area {
+    if (self.overlayLetter.length == 0) return;
+    CGFloat s = MIN(area.size.width, area.size.height) * 0.5;
+    CGRect box = CGRectMake(CGRectGetMidX(area) - s / 2.0, CGRectGetMidY(area) - s / 2.0, s, s);
+    [[UIColor colorWithWhite:0.1 alpha:0.78] setFill];
+    [[UIBezierPath bezierPathWithRoundedRect:box cornerRadius:s * 0.12] fill];
+    [self drawText:self.overlayLetter inRect:box font:[UIFont systemFontOfSize:s * 0.7 weight:UIFontWeightBold]
+             color:[UIColor whiteColor] align:NSTextAlignmentCenter];
 }
 
 @end

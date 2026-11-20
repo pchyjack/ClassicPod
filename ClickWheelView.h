@@ -17,6 +17,8 @@ typedef NS_ENUM(NSInteger, ClickWheelButton) {
 // Press-and-hold (about 0.7 s). No didPressButton follows a hold.
 - (void)clickWheel:(ClickWheelView *)wheel didHoldButton:(ClickWheelButton)button;
 - (void)clickWheel:(ClickWheelView *)wheel didEndHoldOfButton:(ClickWheelButton)button;
+- (void)clickWheelDidBeginTouch:(ClickWheelView *)wheel;
+- (void)clickWheelDidEndTouch:(ClickWheelView *)wheel;
 @end
 
 @interface ClickWheelView : UIView
