@@ -55,6 +55,13 @@ static const CGFloat kTapRotationLimit = 0.30;      // below this much rotation,
     [path fill];
 }
 
+- (void)drawSkipAt:(CGPoint)p size:(CGFloat)s forward:(BOOL)forward {
+    CGFloat dir = forward ? 1.0 : -1.0;
+    [self drawTriangleAt:CGPointMake(p.x - dir * s * 0.45, p.y) size:s right:forward];
+    [self drawTriangleAt:CGPointMake(p.x + dir * s * 0.15, p.y) size:s right:forward];
+    UIRectFill(CGRectMake(p.x + dir * s * 0.62 - s * 0.07, p.y - s * 0.5, s * 0.14, s));
+}
+
 - (void)drawRect:(CGRect)rect {
     CGContextRef ctx = UIGraphicsGetCurrentContext();
     CGPoint c = [self wheelCenter];
@@ -62,20 +69,20 @@ static const CGFloat kTapRotationLimit = 0.30;      // below this much rotation,
     CGFloat r = [self centerRadius];
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
 
-    // Outer ring
+    // White ring, slightly shaded toward the bottom
     CGRect outer = CGRectMake(c.x - R, c.y - R, 2 * R, 2 * R);
     CGContextSaveGState(ctx);
     CGContextAddEllipseInRect(ctx, outer);
     CGContextClip(ctx);
-    CGFloat ringColors[8] = {0.97, 0.97, 0.97, 1.0, 0.80, 0.80, 0.81, 1.0};
+    CGFloat ringColors[8] = {1.0, 1.0, 1.0, 1.0, 0.915, 0.915, 0.92, 1.0};
     CGGradientRef ringGradient = CGGradientCreateWithColorComponents(cs, ringColors, NULL, 2);
     CGContextDrawLinearGradient(ctx, ringGradient, CGPointMake(c.x, c.y - R), CGPointMake(c.x, c.y + R), 0);
     CGGradientRelease(ringGradient);
     CGContextRestoreGState(ctx);
 
     UIBezierPath *ringOutline = [UIBezierPath bezierPathWithOvalInRect:outer];
-    ringOutline.lineWidth = 1.0;
-    [[UIColor colorWithWhite:0.62 alpha:1.0] setStroke];
+    ringOutline.lineWidth = 1.2;
+    [[UIColor colorWithWhite:0.58 alpha:1.0] setStroke];
     [ringOutline stroke];
 
     // Center button
@@ -83,34 +90,32 @@ static const CGFloat kTapRotationLimit = 0.30;      // below this much rotation,
     CGContextSaveGState(ctx);
     CGContextAddEllipseInRect(ctx, inner);
     CGContextClip(ctx);
-    CGFloat centerColors[8] = {0.995, 0.995, 0.995, 1.0, 0.89, 0.89, 0.90, 1.0};
+    CGFloat centerColors[8] = {1.0, 1.0, 1.0, 1.0, 0.93, 0.93, 0.94, 1.0};
     CGGradientRef centerGradient = CGGradientCreateWithColorComponents(cs, centerColors, NULL, 2);
     CGContextDrawLinearGradient(ctx, centerGradient, CGPointMake(c.x, c.y - r), CGPointMake(c.x, c.y + r), 0);
     CGGradientRelease(centerGradient);
     CGContextRestoreGState(ctx);
 
     UIBezierPath *innerOutline = [UIBezierPath bezierPathWithOvalInRect:inner];
-    innerOutline.lineWidth = 1.0;
-    [[UIColor colorWithWhite:0.66 alpha:1.0] setStroke];
+    innerOutline.lineWidth = 1.2;
+    [[UIColor colorWithWhite:0.62 alpha:1.0] setStroke];
     [innerOutline stroke];
     CGColorSpaceRelease(cs);
 
-    // Button symbols
-    UIColor *labelColor = [UIColor colorWithWhite:0.47 alpha:1.0];
+    // Button marks in light gray
+    UIColor *labelColor = [UIColor colorWithWhite:0.60 alpha:1.0];
     [labelColor setFill];
     CGFloat mid = (R + r) / 2.0;
-    CGFloat s = (R - r) * 0.36;
+    CGFloat s = (R - r) * 0.27;
 
-    NSDictionary *attrs = @{NSFontAttributeName: [UIFont systemFontOfSize:(R - r) * 0.30 weight:UIFontWeightHeavy],
+    NSDictionary *attrs = @{NSFontAttributeName: [UIFont systemFontOfSize:(R - r) * 0.26 weight:UIFontWeightBold],
                             NSForegroundColorAttributeName: labelColor};
     NSString *menu = @"MENU";
     CGSize ms = [menu sizeWithAttributes:attrs];
     [menu drawAtPoint:CGPointMake(c.x - ms.width / 2.0, c.y - mid - ms.height / 2.0) withAttributes:attrs];
 
-    [self drawTriangleAt:CGPointMake(c.x + mid - s * 0.45, c.y) size:s right:YES];
-    [self drawTriangleAt:CGPointMake(c.x + mid + s * 0.45, c.y) size:s right:YES];
-    [self drawTriangleAt:CGPointMake(c.x - mid - s * 0.45, c.y) size:s right:NO];
-    [self drawTriangleAt:CGPointMake(c.x - mid + s * 0.45, c.y) size:s right:NO];
+    [self drawSkipAt:CGPointMake(c.x + mid, c.y) size:s forward:YES];
+    [self drawSkipAt:CGPointMake(c.x - mid, c.y) size:s forward:NO];
 
     [self drawTriangleAt:CGPointMake(c.x - s * 0.55, c.y + mid) size:s right:YES];
     CGFloat bx = c.x + s * 0.15, by = c.y + mid - s / 2.0;

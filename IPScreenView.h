@@ -17,6 +17,14 @@ typedef NS_ENUM(NSInteger, IPBottomMode) {
     IPBottomModeShuffle
 };
 
+typedef NS_ENUM(NSInteger, IPPreviewKind) {
+    IPPreviewNone,
+    IPPreviewArtwork,
+    IPPreviewNowPlaying,
+    IPPreviewSettings,
+    IPPreviewShuffle
+};
+
 // The LCD. Draws either a menu list or the Now Playing screen.
 // Call -setNeedsDisplay after changing properties.
 @interface IPScreenView : UIView
@@ -26,6 +34,8 @@ typedef NS_ENUM(NSInteger, IPBottomMode) {
 // Menu mode
 @property (nonatomic, copy) NSArray<IPMenuItem *> *items;
 @property (nonatomic) NSInteger selectedIndex;
+@property (nonatomic) IPPreviewKind previewKind;     // picture pane to the right of the list
+@property (nonatomic, strong) UIImage *previewImage; // used by IPPreviewArtwork
 
 // Now Playing mode
 @property (nonatomic, strong) MPMediaItem *nowPlayingItem;

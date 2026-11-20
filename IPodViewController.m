@@ -31,7 +31,19 @@ static NSDictionary<NSString *, NSString *> *LibraryTitles(void) {
 }
 
 // "#" for digits and symbols, otherwise the first letter A...Z.
+// iOS sorts "The Beatles" under B, so skip a leading "The ", "A " or "An ".
+static NSString *StripArticle(NSString *t) {
+    for (NSString *prefix in @[@"the ", @"an ", @"a "]) {
+        if (t.length > prefix.length &&
+            [t compare:prefix options:NSCaseInsensitiveSearch range:NSMakeRange(0, prefix.length)] == NSOrderedSame) {
+            return [t substringFromIndex:prefix.length];
+        }
+    }
+    return t;
+}
+
 static NSString *LetterForTitle(NSString *title) {
+    title = StripArticle(title ?: @"");
     if (title.length == 0) return @"#";
     NSRange r = [title rangeOfComposedCharacterSequenceAtIndex:0];
     NSString *s = [[title substringWithRange:r] stringByFoldingWithOptions:NSDiacriticInsensitiveSearch | NSCaseInsensitiveSearch
@@ -50,8 +62,17 @@ static NSString *LetterForTitle(NSString *title) {
 @property (nonatomic, strong) UIView *dimView;                    // brightness / backlight
 @property (nonatomic, strong) ClickWheelView *wheel;
 @property (nonatomic, strong) MPVolumeView *volumeView;
-@property (nonatomic, strong) MPMusicPlayerController *player;   // nil until the first song is played
+@property (nonatomic, strong) AVPlayer *avPlayer;                 // plays the songs' file URLs in-process
+@property (nonatomic, copy) NSArray<MPMediaItem *> *queue;
+@property (nonatomic, copy) NSArray<NSNumber *> *order;           // play order: indexes into queue
+@property (nonatomic) NSInteger orderPos;
+@property (nonatomic, strong) MPMediaItem *currentItem;
+@property (nonatomic) BOOL isPlaying;
 @property (nonatomic) BOOL hasQueue;
+@property (nonatomic) BOOL seeking;
+@property (nonatomic) NSTimeInterval seekTarget;
+@property (nonatomic, strong) UIImage *libraryPreview;
+@property (nonatomic) BOOL libraryPreviewTried;
 @property (nonatomic, strong) NSTimer *seekTimer;
 @property (nonatomic) NSInteger seekDirection;
 @property (nonatomic) CFTimeInterval lastPreviousPress;
@@ -69,6 +90,9 @@ static NSString *LetterForTitle(NSString *title) {
 @property (nonatomic, copy) NSArray<NSString *> *coverTitles;
 @property (nonatomic) NSInteger coverIndex;
 @property (nonatomic) BOOL fastScrolling;
+@property (nonatomic) BOOL fastDisabled;                          // this list isn't alphabetical
+@property (nonatomic, copy) NSArray<NSString *> *fastLetters;     // A...Z, then "#" (numbers and symbols last)
+@property (nonatomic, copy) NSDictionary<NSString *, NSNumber *> *fastFirst;
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *stepTimes;
 @property (nonatomic) NSInteger queueCount;
 @end
@@ -96,19 +120,19 @@ static NSString *LetterForTitle(NSString *title) {
     // Body of the iPod
     self.view.backgroundColor = [UIColor colorWithWhite:0.93 alpha:1.0];
     self.backgroundLayer = [CAGradientLayer layer];
-    self.backgroundLayer.colors = @[(id)[UIColor colorWithWhite:0.99 alpha:1.0].CGColor,
-                                    (id)[UIColor colorWithWhite:0.86 alpha:1.0].CGColor];
+    self.backgroundLayer.colors = @[(id)[UIColor colorWithWhite:0.995 alpha:1.0].CGColor,
+                                    (id)[UIColor colorWithWhite:0.90 alpha:1.0].CGColor];
     [self.view.layer addSublayer:self.backgroundLayer];
 
     self.screenFrame = [UIView new];
-    self.screenFrame.backgroundColor = [UIColor colorWithWhite:0.55 alpha:1.0];
-    self.screenFrame.layer.cornerRadius = 8;
+    self.screenFrame.backgroundColor = [UIColor colorWithWhite:0.16 alpha:1.0];
+    self.screenFrame.layer.cornerRadius = 6;
     self.screenFrame.layer.borderWidth = 1;
-    self.screenFrame.layer.borderColor = [UIColor colorWithWhite:0.35 alpha:1.0].CGColor;
+    self.screenFrame.layer.borderColor = [UIColor colorWithWhite:0.62 alpha:1.0].CGColor;
     [self.view addSubview:self.screenFrame];
 
     self.screenView = [IPScreenView new];
-    self.screenView.layer.cornerRadius = 4;
+    self.screenView.layer.cornerRadius = 2;
     self.screenView.layer.masksToBounds = YES;
     [self.screenFrame addSubview:self.screenView];
 
@@ -116,7 +140,7 @@ static NSString *LetterForTitle(NSString *title) {
     self.dimView.backgroundColor = [UIColor blackColor];
     self.dimView.alpha = 0;
     self.dimView.userInteractionEnabled = NO;
-    self.dimView.layer.cornerRadius = 4;
+    self.dimView.layer.cornerRadius = 2;
     [self.screenFrame addSubview:self.dimView];
 
     self.wheel = [ClickWheelView new];
@@ -158,11 +182,11 @@ static NSString *LetterForTitle(NSString *title) {
 
     CGFloat margin = 14;
     CGFloat frameW = b.size.width - 2 * margin;
-    CGFloat screenW = frameW - 12;
+    CGFloat screenW = frameW - 8;
     CGFloat screenH = round(screenW * 0.75);   // 4:3 LCD
-    CGFloat frameH = screenH + 12;
+    CGFloat frameH = screenH + 8;
     self.screenFrame.frame = CGRectMake(margin, safe.top + margin, frameW, frameH);
-    self.screenView.frame = CGRectMake(6, 6, screenW, screenH);
+    self.screenView.frame = CGRectMake(4, 4, screenW, screenH);
     self.dimView.frame = self.screenView.frame;
 
     CGFloat availTop = CGRectGetMaxY(self.screenFrame.frame) + 10;
@@ -335,8 +359,7 @@ static NSString *LetterForTitle(NSString *title) {
         NSMutableArray *r = [NSMutableArray arrayWithCapacity:items.count];
         [items enumerateObjectsUsingBlock:^(MPMediaItem *song, NSUInteger i, BOOL *stop) {
             IPAction play = ^{
-                [self playItems:items startIndex:i shuffle:NO];
-                [self showNowPlaying];
+                if ([self playItems:items startIndex:i shuffle:NO]) [self showNowPlaying];
             };
             IPMenuItem *row = [IPMenuItem itemWithTitle:song.title ?: @"Unknown Song" hasChildren:NO action:play];
             row.playAction = play;
@@ -351,8 +374,7 @@ static NSString *LetterForTitle(NSString *title) {
         [self pushSongListWithTitle:title items:items];
     }];
     row.playAction = ^{
-        [self playItems:items startIndex:0 shuffle:NO];
-        [self showNowPlaying];
+        if ([self playItems:items startIndex:0 shuffle:NO]) [self showNowPlaying];
     };
     return row;
 }
@@ -365,7 +387,7 @@ static NSString *LetterForTitle(NSString *title) {
 
 // Press and hold Center on Now Playing: "Browse Artist" / "Browse Album"
 - (void)showNowPlayingOptions {
-    MPMediaItem *item = self.player.nowPlayingItem;
+    MPMediaItem *item = self.currentItem;
     if (!item) return;
     [self pushMenuWithTitle:@"Options" builder:^NSArray<IPMenuItem *> *{
         return @[
@@ -419,14 +441,13 @@ static NSString *LetterForTitle(NSString *title) {
             [IPMenuItem itemWithTitle:@"Shuffle" detail:shuffleText action:^{
                 self.shuffleSetting = (sm == MPMusicShuffleModeSongs) ? MPMusicShuffleModeAlbums
                                     : (sm == MPMusicShuffleModeAlbums ? MPMusicShuffleModeOff : MPMusicShuffleModeSongs);
-                if (self.player) self.player.shuffleMode = self.shuffleSetting;
+                [self reshuffleQueue];
                 [self reloadTopMenu];
             }],
             [IPMenuItem itemWithTitle:@"Repeat" detail:repeat action:^{
                 if (rm == MPMusicRepeatModeAll)      self.repeatSetting = MPMusicRepeatModeOne;
                 else if (rm == MPMusicRepeatModeOne) self.repeatSetting = MPMusicRepeatModeNone;
                 else                                 self.repeatSetting = MPMusicRepeatModeAll;
-                if (self.player) self.player.repeatMode = self.repeatSetting;
                 [self reloadTopMenu];
             }],
             [IPMenuItem itemWithTitle:@"Backlight Timer" hasChildren:YES action:^{ [self pushBacklightMenu]; }],
@@ -490,10 +511,7 @@ static NSString *LetterForTitle(NSString *title) {
     }
     self.shuffleSetting = MPMusicShuffleModeOff;
     self.repeatSetting = MPMusicRepeatModeNone;
-    if (self.player) {
-        self.player.shuffleMode = self.shuffleSetting;
-        self.player.repeatMode = self.repeatSetting;
-    }
+    [self reshuffleQueue];
     [self wakeBacklight];
     [self reloadAllMenus];
 }
@@ -520,7 +538,23 @@ static NSString *LetterForTitle(NSString *title) {
     [self refreshScreen];
 }
 
+// Album art shown beside the main menu, as on the real iPod classic.
+- (UIImage *)libraryPreviewImage {
+    if (!self.libraryPreview && !self.libraryPreviewTried && [self libraryAuthorized]) {
+        self.libraryPreviewTried = YES;
+        NSArray<MPMediaItemCollection *> *albums = [MPMediaQuery albumsQuery].collections;
+        NSInteger start = albums.count ? (NSInteger)arc4random_uniform((uint32_t)albums.count) : 0;
+        for (NSInteger k = 0; k < MIN((NSInteger)albums.count, 40); k++) {
+            MPMediaItemCollection *c = albums[(start + k) % albums.count];
+            UIImage *img = [c.representativeItem.artwork imageWithSize:CGSizeMake(200, 200)];
+            if (img) { self.libraryPreview = img; break; }
+        }
+    }
+    return self.libraryPreview;
+}
+
 - (void)reloadAllMenus {
+    self.libraryPreviewTried = NO;
     for (IPMenu *m in self.stack) [m reload];
     [self refreshScreen];
 }
@@ -528,7 +562,7 @@ static NSString *LetterForTitle(NSString *title) {
 #pragma mark - Fast-forward / rewind (press and hold Next / Previous)
 
 - (void)startSeeking:(NSInteger)direction {
-    if (!self.player) return;
+    if (!self.currentItem) return;
     self.seekDirection = direction;
     [self.seekTimer invalidate];
     self.seekTimer = [NSTimer scheduledTimerWithTimeInterval:0.15 target:self selector:@selector(seekTick)
@@ -541,66 +575,276 @@ static NSString *LetterForTitle(NSString *title) {
 }
 
 - (void)seekTick {
-    MPMediaItem *item = self.player.nowPlayingItem;
-    if (!item) return;
-    NSTimeInterval t = self.player.currentPlaybackTime + self.seekDirection * 8.0;
-    self.player.currentPlaybackTime = MAX(0, MIN(item.playbackDuration - 1, t));
+    if (!self.currentItem) return;
+    [self seekToTime:[self elapsedTime] + self.seekDirection * 8.0];
     [self updateNowPlaying];
     [self.screenView setNeedsDisplay];
 }
 
-#pragma mark - Playback
+#pragma mark - Playback (AVPlayer on each song's file URL; no dependence on the system music player)
 
-- (MPMusicPlayerController *)ensurePlayer {
-    if (!self.player) {
+- (void)shuffleArray:(NSMutableArray *)array {
+    for (NSInteger i = (NSInteger)array.count - 1; i > 0; i--) {
+        [array exchangeObjectAtIndex:i withObjectAtIndex:(NSInteger)arc4random_uniform((uint32_t)(i + 1))];
+    }
+}
+
+// Builds the play order. Normal: the list as is. Shuffle Songs: random, chosen song first.
+// Shuffle Albums: whole albums in random order, chosen song's album first.
+- (void)buildOrderStartingAt:(NSInteger)start {
+    NSInteger n = (NSInteger)self.queue.count;
+    NSMutableArray<NSNumber *> *order = [NSMutableArray arrayWithCapacity:n];
+    if (self.shuffleSetting == MPMusicShuffleModeSongs) {
+        NSMutableArray<NSNumber *> *rest = [NSMutableArray array];
+        for (NSInteger i = 0; i < n; i++) if (i != start) [rest addObject:@(i)];
+        [self shuffleArray:rest];
+        [order addObject:@(start)];
+        [order addObjectsFromArray:rest];
+        self.orderPos = 0;
+    } else if (self.shuffleSetting == MPMusicShuffleModeAlbums) {
+        NSMutableDictionary<NSNumber *, NSMutableArray<NSNumber *> *> *groups = [NSMutableDictionary dictionary];
+        NSMutableArray<NSNumber *> *albumKeys = [NSMutableArray array];
+        for (NSInteger i = 0; i < n; i++) {
+            NSNumber *key = @(self.queue[i].albumPersistentID);
+            if (!groups[key]) {
+                groups[key] = [NSMutableArray array];
+                [albumKeys addObject:key];
+            }
+            [groups[key] addObject:@(i)];
+        }
+        NSNumber *startKey = @(self.queue[start].albumPersistentID);
+        NSMutableArray<NSNumber *> *others = [albumKeys mutableCopy];
+        [others removeObject:startKey];
+        [self shuffleArray:others];
+
+        NSArray<NSNumber *> *first = groups[startKey];
+        NSUInteger at = [first indexOfObject:@(start)];
+        if (at == NSNotFound) at = 0;
+        [order addObjectsFromArray:[first subarrayWithRange:NSMakeRange(at, first.count - at)]];
+        [order addObjectsFromArray:[first subarrayWithRange:NSMakeRange(0, at)]];
+        for (NSNumber *key in others) [order addObjectsFromArray:groups[key]];
+        self.orderPos = 0;
+    } else {
+        for (NSInteger i = 0; i < n; i++) [order addObject:@(i)];
+        self.orderPos = start;
+    }
+    self.order = order;
+}
+
+// Shuffle setting changed while playing: reorder the queue but keep the current song.
+- (void)reshuffleQueue {
+    if (self.queue.count == 0 || !self.currentItem || self.orderPos >= (NSInteger)self.order.count) return;
+    [self buildOrderStartingAt:self.order[self.orderPos].integerValue];
+    [self playbackStateChanged];
+}
+
+- (AVPlayer *)ensurePlayer {
+    if (!self.avPlayer) {
         AVAudioSession *session = [AVAudioSession sharedInstance];
         [session setCategory:AVAudioSessionCategoryPlayback error:nil];
         [session setActive:YES error:nil];
-
-        MPMusicPlayerController *p = [MPMusicPlayerController applicationMusicPlayer];
-        [p beginGeneratingPlaybackNotifications];
-        p.shuffleMode = self.shuffleSetting;
-        p.repeatMode = self.repeatSetting;
-        self.player = p;
+        self.avPlayer = [AVPlayer new];
 
         NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
-        [nc addObserver:self selector:@selector(playerChanged)
-                   name:MPMusicPlayerControllerNowPlayingItemDidChangeNotification object:p];
-        [nc addObserver:self selector:@selector(playerChanged)
-                   name:MPMusicPlayerControllerPlaybackStateDidChangeNotification object:p];
+        [nc addObserver:self selector:@selector(itemDidFinish:) name:AVPlayerItemDidPlayToEndTimeNotification object:nil];
+        [nc addObserver:self selector:@selector(itemDidFinish:) name:AVPlayerItemFailedToPlayToEndTimeNotification object:nil];
+        [nc addObserver:self selector:@selector(audioInterrupted:) name:AVAudioSessionInterruptionNotification object:nil];
+
+        MPRemoteCommandCenter *rc = [MPRemoteCommandCenter sharedCommandCenter];
+        [rc.playCommand addTarget:self action:@selector(remotePlay:)];
+        [rc.pauseCommand addTarget:self action:@selector(remotePause:)];
+        [rc.togglePlayPauseCommand addTarget:self action:@selector(remoteToggle:)];
+        [rc.nextTrackCommand addTarget:self action:@selector(remoteNext:)];
+        [rc.previousTrackCommand addTarget:self action:@selector(remotePrevious:)];
     }
-    return self.player;
+    return self.avPlayer;
 }
 
-- (void)playItems:(NSArray<MPMediaItem *> *)items startIndex:(NSUInteger)index shuffle:(BOOL)shuffle {
-    if (index >= items.count) return;
-    MPMusicPlayerController *p = [self ensurePlayer];
-    self.hasQueue = YES;
-    self.queueCount = (NSInteger)items.count;
+- (MPRemoteCommandHandlerStatus)remotePlay:(MPRemoteCommandEvent *)e {
+    dispatch_async(dispatch_get_main_queue(), ^{ if (!self.isPlaying) [self togglePlayPause]; });
+    return MPRemoteCommandHandlerStatusSuccess;
+}
+- (MPRemoteCommandHandlerStatus)remotePause:(MPRemoteCommandEvent *)e {
+    dispatch_async(dispatch_get_main_queue(), ^{ if (self.isPlaying) [self togglePlayPause]; });
+    return MPRemoteCommandHandlerStatusSuccess;
+}
+- (MPRemoteCommandHandlerStatus)remoteToggle:(MPRemoteCommandEvent *)e {
+    dispatch_async(dispatch_get_main_queue(), ^{ [self togglePlayPause]; });
+    return MPRemoteCommandHandlerStatusSuccess;
+}
+- (MPRemoteCommandHandlerStatus)remoteNext:(MPRemoteCommandEvent *)e {
+    dispatch_async(dispatch_get_main_queue(), ^{ [self skipToNext]; });
+    return MPRemoteCommandHandlerStatusSuccess;
+}
+- (MPRemoteCommandHandlerStatus)remotePrevious:(MPRemoteCommandEvent *)e {
+    dispatch_async(dispatch_get_main_queue(), ^{ [self skipToPrevious]; });
+    return MPRemoteCommandHandlerStatusSuccess;
+}
+
+// Starts the song at `position` in the play order. Songs without a file URL (protected or
+// not downloaded) are skipped in `direction`. Returns NO if nothing could be played.
+- (BOOL)playPosition:(NSInteger)position direction:(NSInteger)direction {
+    NSInteger n = (NSInteger)self.order.count;
+    AVPlayer *player = [self ensurePlayer];
+    for (NSInteger tries = 0; tries < n; tries++) {
+        if (position < 0 || position >= n) {
+            if (self.repeatSetting != MPMusicRepeatModeAll) return NO;
+            position = ((position % n) + n) % n;
+        }
+        MPMediaItem *item = self.queue[self.order[position].integerValue];
+        NSURL *url = item.assetURL;
+        if (url) {
+            self.seeking = NO;
+            [player replaceCurrentItemWithPlayerItem:[AVPlayerItem playerItemWithURL:url]];
+            [player play];
+            self.orderPos = position;
+            self.currentItem = item;
+            self.isPlaying = YES;
+            self.hasQueue = YES;
+            [self updateNowPlayingInfo];
+            [self playbackStateChanged];
+            return YES;
+        }
+        position += direction;
+    }
+    return NO;
+}
+
+- (BOOL)playItems:(NSArray<MPMediaItem *> *)items startIndex:(NSUInteger)index shuffle:(BOOL)shuffle {
+    if (index >= items.count) return NO;
     if (shuffle) self.shuffleSetting = MPMusicShuffleModeSongs;
-    [p setQueueWithItemCollection:[MPMediaItemCollection collectionWithItems:items]];
-    p.shuffleMode = self.shuffleSetting;
-    p.nowPlayingItem = items[index];
-    [p play];
+
+    NSArray<MPMediaItem *> *oldQueue = self.queue;
+    NSArray<NSNumber *> *oldOrder = self.order;
+    NSInteger oldPos = self.orderPos;
+
+    self.queue = items;
+    [self buildOrderStartingAt:(NSInteger)index];
+    if ([self playPosition:self.orderPos direction:1]) return YES;
+
+    self.queue = oldQueue;      // keep whatever was playing
+    self.order = oldOrder;
+    self.orderPos = oldPos;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Can\u2019t Play Song"
+        message:@"This song is protected or isn\u2019t downloaded to this device."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+    return NO;
 }
 
 - (void)shuffleAllSongs {
     NSArray<MPMediaItem *> *songs = [MPMediaQuery songsQuery].items;
     if (songs.count == 0) return;
-    [self playItems:songs startIndex:arc4random_uniform((uint32_t)songs.count) shuffle:YES];
-    [self showNowPlaying];
+    if ([self playItems:songs startIndex:arc4random_uniform((uint32_t)songs.count) shuffle:YES]) [self showNowPlaying];
+}
+
+- (NSTimeInterval)elapsedTime {
+    if (self.seeking) return self.seekTarget;
+    if (!self.avPlayer.currentItem) return 0;
+    double t = CMTimeGetSeconds(self.avPlayer.currentTime);
+    return (isnan(t) || t < 0) ? 0 : t;
+}
+
+- (void)seekToTime:(NSTimeInterval)time {
+    if (!self.avPlayer.currentItem) return;
+    NSTimeInterval duration = self.currentItem.playbackDuration;
+    time = MAX(0, MIN(duration > 1 ? duration - 0.5 : duration, time));
+    self.seeking = YES;
+    self.seekTarget = time;
+    [self.avPlayer seekToTime:CMTimeMakeWithSeconds(time, 600) completionHandler:^(BOOL finished) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (fabs(self.seekTarget - time) < 0.001) self.seeking = NO;   // only the latest seek clears it
+        });
+    }];
+    [self updateNowPlayingInfo];
 }
 
 - (void)togglePlayPause {
-    if (!self.player) return;
-    if (self.player.playbackState == MPMusicPlaybackStatePlaying) {
-        [self.player pause];
-    } else if (self.hasQueue) {
-        [self.player play];
+    if (!self.avPlayer || !self.currentItem) return;
+    if (self.isPlaying) {
+        [self.avPlayer pause];
+        self.isPlaying = NO;
+    } else {
+        if (self.currentItem.playbackDuration > 1 && [self elapsedTime] >= self.currentItem.playbackDuration - 0.5) {
+            [self seekToTime:0];   // the queue had finished: start this song again
+        }
+        [self.avPlayer play];
+        self.isPlaying = YES;
+    }
+    [self updateNowPlayingInfo];
+    [self playbackStateChanged];
+}
+
+- (void)skipToNext {
+    if (!self.currentItem) return;
+    [self playPosition:self.orderPos + 1 direction:1];
+}
+
+- (void)skipToPrevious {
+    if (!self.currentItem) return;
+    if (self.orderPos > 0 || self.repeatSetting == MPMusicRepeatModeAll) {
+        [self playPosition:self.orderPos - 1 direction:-1];
+    } else {
+        [self seekToTime:0];
     }
 }
 
+- (void)itemDidFinish:(NSNotification *)note {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (note.object != self.avPlayer.currentItem) return;
+        BOOL failed = [note.name isEqualToString:AVPlayerItemFailedToPlayToEndTimeNotification];
+        if (self.repeatSetting == MPMusicRepeatModeOne && !failed) {
+            [self seekToTime:0];
+            [self.avPlayer play];
+            self.isPlaying = YES;
+            [self updateNowPlayingInfo];
+            return;
+        }
+        if (![self playPosition:self.orderPos + 1 direction:1]) {   // end of the queue
+            self.isPlaying = NO;
+            [self updateNowPlayingInfo];
+            [self playbackStateChanged];
+        }
+    });
+}
+
+- (void)audioInterrupted:(NSNotification *)note {
+    NSUInteger type = [note.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
+    NSUInteger options = [note.userInfo[AVAudioSessionInterruptionOptionKey] unsignedIntegerValue];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (type == AVAudioSessionInterruptionTypeBegan) {
+            self.isPlaying = NO;
+        } else if ((options & AVAudioSessionInterruptionOptionShouldResume) && self.currentItem) {
+            [[AVAudioSession sharedInstance] setActive:YES error:nil];
+            [self.avPlayer play];
+            self.isPlaying = YES;
+        }
+        [self updateNowPlayingInfo];
+        [self playbackStateChanged];
+    });
+}
+
+// Lock screen / Control Center
+- (void)updateNowPlayingInfo {
+    MPMediaItem *item = self.currentItem;
+    if (!item) {
+        [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = nil;
+        return;
+    }
+    NSMutableDictionary *info = [NSMutableDictionary dictionary];
+    info[MPMediaItemPropertyTitle] = item.title ?: @"";
+    info[MPMediaItemPropertyArtist] = item.artist ?: @"";
+    info[MPMediaItemPropertyAlbumTitle] = item.albumTitle ?: @"";
+    info[MPMediaItemPropertyPlaybackDuration] = @(item.playbackDuration);
+    info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @([self elapsedTime]);
+    info[MPNowPlayingInfoPropertyPlaybackRate] = @(self.isPlaying ? 1.0 : 0.0);
+    if (item.artwork) info[MPMediaItemPropertyArtwork] = item.artwork;
+    [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = info;
+}
+
 - (void)showNowPlaying {
+    if (!self.currentItem) return;
     self.coverFlowActive = NO;
     self.sliderKind = 0;
     self.nowPlayingActive = YES;
@@ -694,6 +938,14 @@ static NSString *LetterForTitle(NSString *title) {
         s.mode = IPScreenModeMenu;
         s.title = m.title;
     }
+    s.previewKind = IPPreviewNone;
+    if (s.mode == IPScreenModeMenu && (self.stack.count == 1 || [m.title isEqualToString:@"Music"])) {
+        IPMenuItem *sel = (m.selectedIndex < (NSInteger)m.items.count) ? m.items[m.selectedIndex] : nil;
+        if ([sel.title isEqualToString:@"Settings"])           s.previewKind = IPPreviewSettings;
+        else if ([sel.title isEqualToString:@"Shuffle Songs"]) s.previewKind = IPPreviewShuffle;
+        else if ([sel.title isEqualToString:@"Now Playing"])   s.previewKind = IPPreviewNowPlaying;
+        else { s.previewKind = IPPreviewArtwork; s.previewImage = [self libraryPreviewImage]; }
+    }
     s.items = m.items;
     s.selectedIndex = m.selectedIndex;
     [self updateNowPlaying];
@@ -702,37 +954,25 @@ static NSString *LetterForTitle(NSString *title) {
 
 - (void)updateNowPlaying {
     IPScreenView *s = self.screenView;
+    MPMediaItem *item = self.currentItem;
     s.shuffleMode = self.shuffleSetting;
     s.repeatMode = self.repeatSetting;
-    if (!self.player) {
-        s.nowPlayingItem = nil;
-        s.elapsed = 0;
-        s.duration = 0;
-        s.playing = NO;
-        s.queueIndex = -1;
-        s.queueCount = 0;
-        s.rating = 0;
-        return;
-    }
-    MPMediaItem *item = self.player.nowPlayingItem;
     s.nowPlayingItem = item;
     s.rating = [self ratingForItem:item];
-    NSTimeInterval t = self.player.currentPlaybackTime;
-    s.elapsed = (isnan(t) || t < 0) ? 0 : t;
+    s.elapsed = [self elapsedTime];
     s.duration = item.playbackDuration;
-    s.playing = (self.player.playbackState == MPMusicPlaybackStatePlaying);
-    NSUInteger idx = self.player.indexOfNowPlayingItem;
-    s.queueIndex = (idx == NSNotFound) ? -1 : (NSInteger)idx;
-    s.queueCount = self.queueCount;
+    s.playing = self.isPlaying;
+    s.queueIndex = item ? self.orderPos : -1;
+    s.queueCount = (NSInteger)self.order.count;
 }
 
 - (void)tick {
-    if (!self.player) return;
+    if (!self.avPlayer) return;
     [self updateNowPlaying];
     [self.screenView setNeedsDisplay];
 }
 
-- (void)playerChanged {
+- (void)playbackStateChanged {
     [self updateNowPlaying];
     if (self.stack.count == 1) [self reloadTopMenu]; // root shows "Now Playing" only when something is queued
     [self.screenView setNeedsDisplay];
@@ -782,39 +1022,61 @@ static NSString *LetterForTitle(NSString *title) {
 
 #pragma mark - Fast scrolling by letter
 
+// Builds the letter index. Returns NO if the list isn't in alphabetical order (e.g. album tracks),
+// so fast scrolling is only offered where letters make sense.
+- (BOOL)buildFastScrollIndexForTitles:(NSArray<NSString *> *)titles {
+    NSMutableArray<NSString *> *letters = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSNumber *> *first = [NSMutableDictionary dictionary];
+    NSInteger breaks = 0;
+    NSString *previous = nil;
+    for (NSInteger i = 0; i < (NSInteger)titles.count; i++) {
+        NSString *L = LetterForTitle(titles[i]);
+        if (![L isEqualToString:previous] && first[L]) breaks++;   // a letter we've already left
+        if (!first[L]) {
+            first[L] = @(i);
+            [letters addObject:L];
+        }
+        previous = L;
+    }
+    if (breaks > (NSInteger)titles.count / 4) return NO;
+
+    [letters sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {   // "#" goes last
+        if ([a isEqualToString:@"#"]) return [b isEqualToString:@"#"] ? NSOrderedSame : NSOrderedDescending;
+        if ([b isEqualToString:@"#"]) return NSOrderedAscending;
+        return [a compare:b];
+    }];
+    self.fastLetters = letters;
+    self.fastFirst = first;
+    return YES;
+}
+
 // Moving the thumb quickly on a long list (or Cover Flow) jumps by letter, as on the real iPod.
 // Returns YES (and sets *result) while fast scrolling is active.
 - (BOOL)fastScrollBySteps:(NSInteger)steps titles:(NSArray<NSString *> *)titles current:(NSInteger)current result:(NSInteger *)result {
-    if (titles.count < 30) return NO;
+    if (titles.count < 30 || self.fastDisabled) return NO;
 
     CFTimeInterval now = CACurrentMediaTime();
     for (NSInteger i = 0; i < labs(steps); i++) [self.stepTimes addObject:@(now)];
     while (self.stepTimes.count > 0 && now - [self.stepTimes.firstObject doubleValue] > 0.4) {
         [self.stepTimes removeObjectAtIndex:0];
     }
-    if (!self.fastScrolling && self.stepTimes.count >= 5) self.fastScrolling = YES;
-    if (!self.fastScrolling) return NO;
-
-    NSMutableArray<NSString *> *letters = [NSMutableArray array];
-    NSMutableDictionary<NSString *, NSNumber *> *firstIndex = [NSMutableDictionary dictionary];
-    for (NSInteger i = 0; i < (NSInteger)titles.count; i++) {
-        NSString *L = LetterForTitle(titles[i]);
-        if (!firstIndex[L]) {
-            firstIndex[L] = @(i);
-            [letters addObject:L];
+    if (!self.fastScrolling && self.stepTimes.count >= 5) {
+        if ([self buildFastScrollIndexForTitles:titles]) {
+            self.fastScrolling = YES;
+        } else {
+            self.fastDisabled = YES;
+            [self.stepTimes removeAllObjects];
+            return NO;
         }
     }
-    [letters sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
-        if ([a isEqualToString:@"#"]) return [b isEqualToString:@"#"] ? NSOrderedSame : NSOrderedAscending;
-        if ([b isEqualToString:@"#"]) return NSOrderedDescending;
-        return [a compare:b];
-    }];
+    if (!self.fastScrolling) return NO;
 
+    NSArray<NSString *> *letters = self.fastLetters;
     NSInteger li = [letters indexOfObject:LetterForTitle(titles[MAX(0, MIN((NSInteger)titles.count - 1, current))])];
     if (li == NSNotFound) li = 0;
     li = MAX(0, MIN((NSInteger)letters.count - 1, li + steps));
     NSString *letter = letters[li];
-    *result = firstIndex[letter].integerValue;
+    *result = self.fastFirst[letter].integerValue;
     self.screenView.overlayLetter = letter;
     return YES;
 }
@@ -827,6 +1089,9 @@ static NSString *LetterForTitle(NSString *title) {
 
 - (void)clickWheelDidEndTouch:(ClickWheelView *)wheel {
     [self.stepTimes removeAllObjects];
+    self.fastDisabled = NO;
+    self.fastLetters = nil;
+    self.fastFirst = nil;
     if (self.fastScrolling || self.screenView.overlayLetter) {
         self.fastScrolling = NO;
         self.screenView.overlayLetter = nil;
@@ -872,11 +1137,10 @@ static NSString *LetterForTitle(NSString *title) {
     // Now Playing: the wheel does volume, scrubbing, rating or shuffle depending on the bottom bar
     if (self.nowPlayingActive) {
         IPScreenView *s = self.screenView;
-        MPMediaItem *item = self.player.nowPlayingItem;
+        MPMediaItem *item = self.currentItem;
         switch (s.bottomMode) {
             case IPBottomModeScrub: {
-                NSTimeInterval t = self.player.currentPlaybackTime + steps * 4.0;
-                self.player.currentPlaybackTime = MAX(0, MIN(item.playbackDuration, t));
+                [self seekToTime:[self elapsedTime] + steps * 4.0];
                 break;
             }
             case IPBottomModeRating: {
@@ -890,7 +1154,7 @@ static NSString *LetterForTitle(NSString *title) {
                 if (idx < 0 || idx > 2) idx = 0;
                 idx = MAX(0, MIN(2, idx + steps));
                 self.shuffleSetting = (MPMusicShuffleMode)[modes[idx] integerValue];
-                if (self.player) self.player.shuffleMode = self.shuffleSetting;
+                [self reshuffleQueue];
                 break;
             }
             default: {
@@ -978,7 +1242,7 @@ static NSString *LetterForTitle(NSString *title) {
                 self.coverIndex = MIN((NSInteger)self.coverAlbums.count - 1, self.coverIndex + 1);
                 [self refreshScreen];
             } else {
-                [self.player skipToNextItem];
+                [self skipToNext];
             }
             break;
 
@@ -987,10 +1251,10 @@ static NSString *LetterForTitle(NSString *title) {
                 self.coverIndex = MAX(0, self.coverIndex - 1);
                 [self refreshScreen];
             } else if (CACurrentMediaTime() - self.lastPreviousPress < 1.5) {
-                [self.player skipToPreviousItem];
+                [self skipToPrevious];
                 self.lastPreviousPress = 0;
             } else {
-                [self.player skipToBeginning];
+                [self seekToTime:0];
                 self.lastPreviousPress = CACurrentMediaTime();
             }
             break;
@@ -1001,8 +1265,7 @@ static NSString *LetterForTitle(NSString *title) {
                 [self refreshScreen];
             } else if (self.coverFlowActive) {
                 if (self.coverIndex >= 0 && self.coverIndex < (NSInteger)self.coverAlbums.count) {
-                    [self playItems:self.coverAlbums[self.coverIndex].items startIndex:0 shuffle:NO];
-                    [self showNowPlaying];
+                    if ([self playItems:self.coverAlbums[self.coverIndex].items startIndex:0 shuffle:NO]) [self showNowPlaying];
                 }
             } else {
                 IPMenu *m = self.stack.lastObject;

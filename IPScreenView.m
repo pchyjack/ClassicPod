@@ -1,4 +1,5 @@
 #import "IPScreenView.h"
+#import <QuartzCore/QuartzCore.h>
 
 static const NSInteger kVisibleRows = 8;
 
@@ -13,6 +14,9 @@ static NSString *TimeString(NSTimeInterval t) {
 @property (nonatomic) MPMediaEntityPersistentID artworkID;
 @property (nonatomic) BOOL hasArtworkID;
 @property (nonatomic, strong) NSCache *coverCache;
+@property (nonatomic, strong) CADisplayLink *coverLink;
+@property (nonatomic) CGFloat coverPosition;   // animated position, in album indexes
+@property (nonatomic) BOOL coverNeedsSnap;     // jump (don't animate) to the next index we're given
 @end
 
 @implementation IPScreenView
@@ -34,6 +38,48 @@ static NSString *TimeString(NSTimeInterval t) {
     if (_coverItems == items) return;
     _coverItems = items;
     [self.coverCache removeAllObjects];
+    self.coverNeedsSnap = YES;
+}
+
+- (void)setCoverIndex:(NSInteger)index {
+    BOOL changed = (index != _coverIndex);
+    _coverIndex = index;
+    if (self.coverNeedsSnap) {
+        self.coverNeedsSnap = NO;
+        self.coverPosition = index;
+        [self stopCoverAnimation];
+        return;
+    }
+    if (changed || fabs(self.coverPosition - index) > 0.005) [self startCoverAnimation];
+}
+
+- (void)startCoverAnimation {
+    if (self.coverLink) return;
+    self.coverLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(coverTick:)];
+    [self.coverLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+}
+
+- (void)stopCoverAnimation {
+    [self.coverLink invalidate];
+    self.coverLink = nil;
+}
+
+// Glides the covers toward the selected album (ease-out), like the real Cover Flow.
+- (void)coverTick:(CADisplayLink *)link {
+    CGFloat target = self.coverIndex;
+    CGFloat diff = target - self.coverPosition;
+    if (fabs(diff) > 8) { // after a big jump, only animate the last few covers
+        self.coverPosition = target - (diff > 0 ? 8 : -8);
+        diff = target - self.coverPosition;
+    }
+    if (self.mode != IPScreenModeCoverFlow || fabs(diff) < 0.004) {
+        self.coverPosition = target;
+        [self stopCoverAnimation];
+    } else {
+        CGFloat dt = MAX(1.0 / 120.0, MIN(1.0 / 20.0, link.targetTimestamp - link.timestamp));
+        self.coverPosition += diff * (1.0 - exp(-dt * 12.0));
+    }
+    [self setNeedsDisplay];
 }
 
 - (void)setNowPlayingItem:(MPMediaItem *)item {
@@ -108,47 +154,52 @@ static NSString *TimeString(NSTimeInterval t) {
 }
 
 - (void)drawTitleBarInRect:(CGRect)r ctx:(CGContextRef)ctx {
-    const CGFloat top[3] = {0.97, 0.97, 0.98};
-    const CGFloat bottom[3] = {0.72, 0.74, 0.77};
+    const CGFloat top[3] = {0.93, 0.93, 0.94};
+    const CGFloat bottom[3] = {0.66, 0.67, 0.70};
     [self fillGradientInRect:r top:top bottom:bottom ctx:ctx];
-    [[UIColor colorWithWhite:0.45 alpha:1.0] setFill];
+    [[UIColor colorWithWhite:0.40 alpha:1.0] setFill];
     UIRectFill(CGRectMake(0, CGRectGetMaxY(r) - 1, r.size.width, 1));
 
-    UIFont *font = [UIFont systemFontOfSize:r.size.height * 0.56 weight:UIFontWeightBold];
-    [self drawText:self.title inRect:CGRectMake(40, r.origin.y, r.size.width - 80, r.size.height)
-              font:font color:[UIColor blackColor] align:NSTextAlignmentCenter];
+    // Title on the left, like the real iPod classic
+    UIFont *font = [UIFont systemFontOfSize:r.size.height * 0.62 weight:UIFontWeightBold];
+    [self drawText:self.title inRect:CGRectMake(8, r.origin.y, r.size.width - 84, r.size.height)
+              font:font color:[UIColor blackColor] align:NSTextAlignmentLeft];
 
+    // Right side: play / pause, then battery
     CGFloat cy = CGRectGetMidY(r);
-    [[UIColor colorWithWhite:0.15 alpha:1.0] setFill];
-    if (self.playing) {
-        UIBezierPath *tri = [UIBezierPath bezierPath];
-        [tri moveToPoint:CGPointMake(10, cy - 5)];
-        [tri addLineToPoint:CGPointMake(18, cy)];
-        [tri addLineToPoint:CGPointMake(10, cy + 5)];
-        [tri closePath];
-        [tri fill];
-    } else if (self.nowPlayingItem) {
-        UIRectFill(CGRectMake(10, cy - 5, 3, 10));
-        UIRectFill(CGRectMake(16, cy - 5, 3, 10));
-    }
-
     float level = [UIDevice currentDevice].batteryLevel;
     if (level < 0) level = 1.0f;
-    CGRect bat = CGRectMake(r.size.width - 34, cy - 5, 24, 10);
+    CGRect bat = CGRectMake(r.size.width - 34, cy - 5.5, 26, 11);
     UIBezierPath *bp = [UIBezierPath bezierPathWithRoundedRect:bat cornerRadius:2];
     bp.lineWidth = 1.0;
-    [[UIColor colorWithWhite:0.2 alpha:1.0] setStroke];
+    [[UIColor colorWithWhite:0.30 alpha:1.0] setStroke];
     [bp stroke];
-    [[UIColor colorWithWhite:0.2 alpha:1.0] setFill];
+    [[UIColor colorWithWhite:0.30 alpha:1.0] setFill];
     UIRectFill(CGRectMake(CGRectGetMaxX(bat), cy - 2, 2, 4));
     CGRect fill = CGRectInset(bat, 2, 2);
     fill.size.width *= level;
-    [(level < 0.2f ? [UIColor colorWithRed:0.85 green:0.2 blue:0.2 alpha:1] : [UIColor colorWithRed:0.25 green:0.7 blue:0.3 alpha:1]) setFill];
+    [(level < 0.2f ? [UIColor colorWithRed:0.85 green:0.20 blue:0.20 alpha:1] : [UIColor colorWithRed:0.30 green:0.78 blue:0.25 alpha:1]) setFill];
     UIRectFill(fill);
+
+    CGFloat px = bat.origin.x - 18;
+    [[UIColor colorWithRed:0.15 green:0.55 blue:0.95 alpha:1.0] setFill];
+    if (self.playing) {
+        UIBezierPath *tri = [UIBezierPath bezierPath];
+        [tri moveToPoint:CGPointMake(px, cy - 6)];
+        [tri addLineToPoint:CGPointMake(px + 11, cy)];
+        [tri addLineToPoint:CGPointMake(px, cy + 6)];
+        [tri closePath];
+        [tri fill];
+    } else if (self.nowPlayingItem) {
+        UIRectFill(CGRectMake(px, cy - 6, 4, 12));
+        UIRectFill(CGRectMake(px + 7, cy - 6, 4, 12));
+    }
 }
 
 - (void)drawMenuInRect:(CGRect)body ctx:(CGContextRef)ctx {
     NSInteger n = (NSInteger)self.items.count;
+    BOOL hasPreview = (self.previewKind != IPPreviewNone);
+    CGFloat listW = hasPreview ? round(body.size.width * 0.62) : body.size.width;
     CGFloat rowH = body.size.height / kVisibleRows;
     NSInteger sel = MAX(0, MIN(n - 1, self.selectedIndex));
 
@@ -157,8 +208,8 @@ static NSString *TimeString(NSTimeInterval t) {
     self.topIndex = MAX(0, MIN(self.topIndex, MAX(0, n - kVisibleRows)));
 
     BOOL needsScrollBar = n > kVisibleRows;
-    CGFloat rightEdge = body.size.width - (needsScrollBar ? 12 : 0);
-    UIFont *font = [UIFont systemFontOfSize:rowH * 0.60 weight:UIFontWeightSemibold];
+    CGFloat rightEdge = listW - (needsScrollBar ? 12 : 0);
+    UIFont *font = [UIFont systemFontOfSize:rowH * 0.64 weight:UIFontWeightBold];
 
     for (NSInteger i = 0; i < kVisibleRows; i++) {
         NSInteger idx = self.topIndex + i;
@@ -169,20 +220,20 @@ static NSString *TimeString(NSTimeInterval t) {
         UIColor *textColor = [UIColor blackColor];
 
         if (selected) {
-            const CGFloat top[3] = {0.30, 0.58, 0.95};
-            const CGFloat bottom[3] = {0.10, 0.36, 0.78};
+            const CGFloat top[3] = {0.33, 0.62, 0.93};
+            const CGFloat bottom[3] = {0.12, 0.40, 0.80};
             [self fillGradientInRect:row top:top bottom:bottom ctx:ctx];
             textColor = [UIColor whiteColor];
         }
 
-        CGFloat trailing = 10;
-        if (item.hasChildren) {
-            CGFloat cx = rightEdge - 14, cy = CGRectGetMidY(row);
+        CGFloat trailing = 8;
+        if (selected && item.hasChildren) {            // the arrow only appears on the highlighted row
+            CGFloat cx = rightEdge - 15, cy = CGRectGetMidY(row);
             UIBezierPath *chevron = [UIBezierPath bezierPath];
-            [chevron moveToPoint:CGPointMake(cx, cy - 5)];
-            [chevron addLineToPoint:CGPointMake(cx + 5, cy)];
-            [chevron addLineToPoint:CGPointMake(cx, cy + 5)];
-            chevron.lineWidth = 2.0;
+            [chevron moveToPoint:CGPointMake(cx, cy - 5.5)];
+            [chevron addLineToPoint:CGPointMake(cx + 5.5, cy)];
+            [chevron addLineToPoint:CGPointMake(cx, cy + 5.5)];
+            chevron.lineWidth = 2.8;
             chevron.lineCapStyle = kCGLineCapRound;
             chevron.lineJoinStyle = kCGLineJoinRound;
             [textColor setStroke];
@@ -190,19 +241,19 @@ static NSString *TimeString(NSTimeInterval t) {
             trailing = 24;
         }
 
-        CGFloat titleWidth = rightEdge - 10 - trailing;
+        CGFloat titleWidth = rightEdge - 8 - trailing;
         if (item.detail.length) {
-            titleWidth = rightEdge * 0.55 - 10;
+            titleWidth = rightEdge * 0.55 - 8;
             [self drawText:item.detail
-                    inRect:CGRectMake(rightEdge * 0.55, row.origin.y, rightEdge * 0.45 - 10, rowH)
+                    inRect:CGRectMake(rightEdge * 0.55, row.origin.y, rightEdge * 0.45 - 8, rowH)
                       font:font color:textColor align:NSTextAlignmentRight];
         }
-        [self drawText:item.title inRect:CGRectMake(10, row.origin.y, titleWidth, rowH)
+        [self drawText:item.title inRect:CGRectMake(8, row.origin.y, titleWidth, rowH)
                   font:font color:textColor align:NSTextAlignmentLeft];
     }
 
     if (needsScrollBar) {
-        CGRect track = CGRectMake(body.size.width - 10, body.origin.y + 2, 6, body.size.height - 4);
+        CGRect track = CGRectMake(listW - 10, body.origin.y + 2, 6, body.size.height - 4);
         UIBezierPath *tp = [UIBezierPath bezierPathWithRoundedRect:track cornerRadius:3];
         [[UIColor colorWithWhite:0.90 alpha:1.0] setFill];
         [tp fill];
@@ -213,10 +264,93 @@ static NSString *TimeString(NSTimeInterval t) {
         CGFloat thumbH = MAX(14.0, track.size.height * kVisibleRows / n);
         CGFloat frac = (CGFloat)self.topIndex / (CGFloat)(n - kVisibleRows);
         CGRect thumb = CGRectMake(track.origin.x, track.origin.y + (track.size.height - thumbH) * frac, track.size.width, thumbH);
-        UIBezierPath *thp = [UIBezierPath bezierPathWithRoundedRect:thumb cornerRadius:3];
         [[UIColor colorWithWhite:0.45 alpha:1.0] setFill];
-        [thp fill];
+        [[UIBezierPath bezierPathWithRoundedRect:thumb cornerRadius:3] fill];
     }
+
+    if (hasPreview) {
+        [self drawPreviewInRect:CGRectMake(listW, body.origin.y, body.size.width - listW, body.size.height) ctx:ctx];
+    }
+}
+
+static void DrawGear(CGPoint c, CGFloat R, UIColor *color) {
+    UIBezierPath *p = [UIBezierPath bezierPath];
+    NSInteger teeth = 8;
+    CGFloat inner = R * 0.78;
+    for (NSInteger i = 0; i < teeth; i++) {
+        CGFloat a = i * 2 * M_PI / teeth;
+        CGFloat baseHalf = 0.20, tipHalf = 0.13;
+        CGPoint p0 = CGPointMake(c.x + inner * cos(a - baseHalf), c.y + inner * sin(a - baseHalf));
+        CGPoint p1 = CGPointMake(c.x + R * cos(a - tipHalf), c.y + R * sin(a - tipHalf));
+        CGPoint p2 = CGPointMake(c.x + R * cos(a + tipHalf), c.y + R * sin(a + tipHalf));
+        CGPoint p3 = CGPointMake(c.x + inner * cos(a + baseHalf), c.y + inner * sin(a + baseHalf));
+        if (i == 0) [p moveToPoint:p0]; else [p addLineToPoint:p0];
+        [p addLineToPoint:p1];
+        [p addLineToPoint:p2];
+        [p addLineToPoint:p3];
+    }
+    [p closePath];
+    [p appendPath:[UIBezierPath bezierPathWithOvalInRect:CGRectMake(c.x - R * 0.36, c.y - R * 0.36, R * 0.72, R * 0.72)]];
+    p.usesEvenOddFillRule = YES;
+    [color setFill];
+    [p fill];
+}
+
+static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
+    [color setStroke];
+    [color setFill];
+    for (NSInteger k = 0; k < 2; k++) {
+        CGFloat y0 = (k == 0) ? 0.35 : -0.35;
+        CGFloat y1 = -y0;
+        UIBezierPath *p = [UIBezierPath bezierPath];
+        p.lineWidth = s * 0.09;
+        p.lineCapStyle = kCGLineCapRound;
+        [p moveToPoint:CGPointMake(c.x - s * 0.6, c.y + s * y0)];
+        [p addCurveToPoint:CGPointMake(c.x + s * 0.38, c.y + s * y1)
+             controlPoint1:CGPointMake(c.x, c.y + s * y0)
+             controlPoint2:CGPointMake(c.x, c.y + s * y1)];
+        [p stroke];
+        UIBezierPath *head = [UIBezierPath bezierPath];
+        [head moveToPoint:CGPointMake(c.x + s * 0.62, c.y + s * y1)];
+        [head addLineToPoint:CGPointMake(c.x + s * 0.34, c.y + s * (y1 - 0.14))];
+        [head addLineToPoint:CGPointMake(c.x + s * 0.34, c.y + s * (y1 + 0.14))];
+        [head closePath];
+        [head fill];
+    }
+}
+
+// The picture pane beside the main menu: album art, or a gear / shuffle symbol.
+- (void)drawPreviewInRect:(CGRect)r ctx:(CGContextRef)ctx {
+    CGContextSaveGState(ctx);
+    CGContextClipToRect(ctx, r);
+
+    UIImage *img = nil;
+    if (self.previewKind == IPPreviewArtwork) img = self.previewImage;
+    else if (self.previewKind == IPPreviewNowPlaying) img = self.artworkImage;
+
+    if (self.previewKind == IPPreviewSettings || self.previewKind == IPPreviewShuffle) {
+        const CGFloat top[3] = {0.97, 0.97, 0.98};
+        const CGFloat bottom[3] = {0.80, 0.81, 0.84};
+        [self fillGradientInRect:r top:top bottom:bottom ctx:ctx];
+        CGPoint c = CGPointMake(CGRectGetMidX(r), CGRectGetMidY(r));
+        CGFloat s = MIN(r.size.width, r.size.height) * 0.46;
+        UIColor *glyph = [UIColor colorWithWhite:0.42 alpha:1.0];
+        if (self.previewKind == IPPreviewSettings) DrawGear(c, s, glyph);
+        else DrawShuffleGlyph(c, s * 1.5, glyph);
+    } else if (img) {
+        CGFloat scale = MAX(r.size.width / img.size.width, r.size.height / img.size.height);
+        CGSize sz = CGSizeMake(img.size.width * scale, img.size.height * scale);
+        [img drawInRect:CGRectMake(CGRectGetMidX(r) - sz.width / 2.0, CGRectGetMidY(r) - sz.height / 2.0, sz.width, sz.height)];
+    } else {
+        [[UIColor colorWithWhite:0.15 alpha:1.0] setFill];
+        UIRectFill(r);
+        [self drawText:@"\u266A" inRect:r font:[UIFont systemFontOfSize:r.size.width * 0.5 weight:UIFontWeightRegular]
+                 color:[UIColor colorWithWhite:0.45 alpha:1.0] align:NSTextAlignmentCenter];
+    }
+    CGContextRestoreGState(ctx);
+
+    [[UIColor colorWithWhite:0.55 alpha:1.0] setFill];
+    UIRectFill(CGRectMake(r.origin.x, r.origin.y, 1, r.size.height));
 }
 
 - (void)drawNowPlayingInRect:(CGRect)body ctx:(CGContextRef)ctx {
@@ -459,21 +593,36 @@ static NSString *TimeString(NSTimeInterval t) {
         return;
     }
 
-    NSInteger idx = MAX(0, MIN(n - 1, self.coverIndex));
     CGFloat w = body.size.width, h = body.size.height;
     CGFloat side = h * 0.46;
     CGFloat cy = body.origin.y + h * 0.36;
+    CGFloat pos = MAX(0, MIN(n - 1, self.coverPosition));
+    NSInteger idx = MAX(0, MIN(n - 1, (NSInteger)lround(pos)));
 
-    for (NSInteger k = 3; k >= 1; k--) {            // far covers first so near ones overlap them
-        for (NSInteger dir = -1; dir <= 1; dir += 2) {
-            NSInteger j = idx + dir * k;
-            if (j < 0 || j >= n) continue;
-            CGFloat cw = side * 0.34, ch = side * 0.86;
-            CGFloat cx = w / 2.0 + dir * (side * 0.62 + (k - 1) * side * 0.24);
-            [self drawCover:[self coverImageAtIndex:j] inRect:CGRectMake(cx - cw / 2.0, cy - ch / 2.0, cw, ch) ctx:ctx];
+    NSMutableArray<NSNumber *> *order = [NSMutableArray array];
+    for (NSInteger j = MAX(0, (NSInteger)floor(pos) - 4); j <= MIN(n - 1, (NSInteger)ceil(pos) + 4); j++) {
+        [order addObject:@(j)];
+    }
+    [order sortUsingComparator:^NSComparisonResult(NSNumber *x, NSNumber *y) { // far covers first
+        CGFloat dx = fabs(x.integerValue - pos), dy = fabs(y.integerValue - pos);
+        return dx > dy ? NSOrderedAscending : (dx < dy ? NSOrderedDescending : NSOrderedSame);
+    }];
+
+    for (NSNumber *num in order) {
+        NSInteger j = num.integerValue;
+        CGFloat offset = j - pos, a = fabs(offset), sign = (offset < 0) ? -1 : 1;
+        CGFloat t = MIN(a, 1.0);
+        CGFloat turn = t * t * (3 - 2 * t);                    // 0 = facing front, 1 = turned away
+        CGFloat cw = side * cos(turn * 65.0 * M_PI / 180.0);   // turning looks like a narrower cover
+        CGFloat ch = side * (1.0 - 0.14 * turn);
+        CGFloat cx = w / 2.0 + sign * (side * 0.72 * turn + MAX(0, a - 1) * side * 0.24);
+        CGRect r = CGRectMake(cx - cw / 2.0, cy - ch / 2.0, cw, ch);
+        [self drawCover:[self coverImageAtIndex:j] inRect:r ctx:ctx];
+        if (turn > 0.01) { // shade covers that are turned away
+            [[UIColor colorWithWhite:0 alpha:0.4 * turn] setFill];
+            UIRectFillUsingBlendMode(r, kCGBlendModeNormal);
         }
     }
-    [self drawCover:[self coverImageAtIndex:idx] inRect:CGRectMake(w / 2.0 - side / 2.0, cy - side / 2.0, side, side) ctx:ctx];
 
     MPMediaItem *rep = self.coverItems[idx].representativeItem;
     CGFloat lineH = h * 0.10;
