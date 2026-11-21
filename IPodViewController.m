@@ -1,6 +1,7 @@
 #import "IPodViewController.h"
 #import "ClickWheelView.h"
 #import "IPScreenView.h"
+#import "IPCoverFlowView.h"
 #import "IPMenu.h"
 #import <MediaPlayer/MediaPlayer.h>
 #import <AVFoundation/AVFoundation.h>
@@ -16,7 +17,7 @@ static NSString *const kVolumeLimitKey = @"VolumeLimit";       // 0 ... 1
 static NSString *const kRatingsKey     = @"Ratings";
 
 static NSArray<NSString *> *MainMenuKeys(void) {
-    return @[@"music", @"playlists", @"artists", @"albums", @"songs", @"genres", @"podcasts", @"audiobooks", @"shuffle"];
+    return @[@"music", @"videos", @"playlists", @"artists", @"albums", @"songs", @"genres", @"podcasts", @"audiobooks", @"shuffle"];
 }
 
 static NSArray<NSString *> *MusicMenuKeys(void) {
@@ -24,7 +25,7 @@ static NSArray<NSString *> *MusicMenuKeys(void) {
 }
 
 static NSDictionary<NSString *, NSString *> *LibraryTitles(void) {
-    return @{@"music": @"Music", @"coverflow": @"Cover Flow", @"playlists": @"Playlists", @"artists": @"Artists",
+    return @{@"music": @"Music", @"videos": @"Videos", @"coverflow": @"Cover Flow", @"playlists": @"Playlists", @"artists": @"Artists",
              @"albums": @"Albums", @"songs": @"Songs", @"genres": @"Genres", @"composers": @"Composers",
              @"compilations": @"Compilations", @"podcasts": @"Podcasts", @"audiobooks": @"Audiobooks",
              @"shuffle": @"Shuffle Songs"};
@@ -55,12 +56,25 @@ static NSString *LetterForTitle(NSString *title) {
     return @"#";
 }
 
+// Hosts the AVPlayerLayer that shows a playing video on the LCD.
+@interface IPVideoView : UIView
+@property (nonatomic, readonly) AVPlayerLayer *playerLayer;
+@end
+
+@implementation IPVideoView
++ (Class)layerClass { return [AVPlayerLayer class]; }
+- (AVPlayerLayer *)playerLayer { return (AVPlayerLayer *)self.layer; }
+@end
+
 @interface IPodViewController () <ClickWheelDelegate>
 @property (nonatomic, strong) CAGradientLayer *backgroundLayer;
 @property (nonatomic, strong) UIView *screenFrame;
 @property (nonatomic, strong) IPScreenView *screenView;
 @property (nonatomic, strong) UIView *dimView;                    // brightness / backlight
 @property (nonatomic, strong) UIView *lcdContainer;               // clips the LCD while menus slide
+@property (nonatomic, strong) UIView *contentView;                // everything on the LCD; this is what slides
+@property (nonatomic, strong) IPVideoView *videoView;
+@property (nonatomic, strong) IPCoverFlowView *coverFlowView;
 @property (nonatomic, strong) CAGradientLayer *glossLayer;        // glass reflection
 @property (nonatomic, strong) ClickWheelView *wheel;
 @property (nonatomic, strong) MPVolumeView *volumeView;
@@ -111,7 +125,7 @@ static NSString *LetterForTitle(NSString *title) {
 
     [[NSUserDefaults standardUserDefaults] registerDefaults:@{
         kClickerKey: @YES,
-        kMainMenuKey: @[@"music", @"shuffle"],
+        kMainMenuKey: @[@"music", @"videos", @"shuffle"],
         kMusicMenuKey: @[@"coverflow", @"playlists", @"artists", @"albums", @"songs", @"genres", @"composers"],
         kBrightnessKey: @1.0,
         kBacklightKey: @10,
@@ -138,8 +152,21 @@ static NSString *LetterForTitle(NSString *title) {
     self.lcdContainer.layer.cornerRadius = 2;
     [self.screenFrame addSubview:self.lcdContainer];
 
+    self.contentView = [UIView new];
+    [self.lcdContainer addSubview:self.contentView];
+
+    self.videoView = [IPVideoView new];
+    self.videoView.backgroundColor = [UIColor blackColor];
+    self.videoView.playerLayer.videoGravity = AVLayerVideoGravityResizeAspect;
+    self.videoView.hidden = YES;
+    [self.contentView addSubview:self.videoView];
+
     self.screenView = [IPScreenView new];
-    [self.lcdContainer addSubview:self.screenView];
+    [self.contentView addSubview:self.screenView];
+
+    self.coverFlowView = [IPCoverFlowView new];
+    self.coverFlowView.hidden = YES;
+    [self.contentView addSubview:self.coverFlowView];
 
     self.dimView = [UIView new];
     self.dimView.backgroundColor = [UIColor blackColor];
@@ -201,7 +228,11 @@ static NSString *LetterForTitle(NSString *title) {
     CGFloat frameH = screenH + 2 * bezel;
     self.screenFrame.frame = CGRectMake(margin, safe.top + margin, frameW, frameH);
     self.lcdContainer.frame = CGRectMake(bezel, bezel, screenW, screenH);
-    if (CGAffineTransformIsIdentity(self.screenView.transform)) self.screenView.frame = self.lcdContainer.bounds;
+    if (CGAffineTransformIsIdentity(self.contentView.transform)) self.contentView.frame = self.lcdContainer.bounds;
+    CGRect inner = self.contentView.bounds;
+    self.videoView.frame = inner;
+    self.screenView.frame = inner;
+    self.coverFlowView.frame = inner;
     self.dimView.frame = self.lcdContainer.frame;
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
@@ -260,6 +291,7 @@ static NSString *LetterForTitle(NSString *title) {
 - (IPMenuItem *)libraryItemForKey:(NSString *)key {
     IPAction action = nil;
     if ([key isEqualToString:@"music"])             action = ^{ [self pushMusicMenu]; };
+    else if ([key isEqualToString:@"videos"])       action = ^{ [self pushVideosMenu]; };
     else if ([key isEqualToString:@"coverflow"])    action = ^{ [self showCoverFlow]; };
     else if ([key isEqualToString:@"playlists"])    action = ^{ [self pushPlaylistsMenu]; };
     else if ([key isEqualToString:@"artists"])      action = ^{ [self pushArtistsMenu]; };
@@ -426,6 +458,72 @@ static NSString *LetterForTitle(NSString *title) {
     }];
 }
 
+#pragma mark - Videos (the movies, shows and clips in your library)
+
+- (void)pushVideosMenu {
+    [self pushMenuWithTitle:@"Videos" builder:^NSArray<IPMenuItem *> *{
+        if (![self libraryAuthorized]) {
+            return @[[IPMenuItem itemWithTitle:@"Allow Music access" hasChildren:NO action:^{
+                [MPMediaLibrary requestAuthorization:^(MPMediaLibraryAuthorizationStatus status) {
+                    dispatch_async(dispatch_get_main_queue(), ^{ [self reloadAllMenus]; });
+                }];
+            }]];
+        }
+        return @[
+            [self videoGroupItemWithTitle:@"Movies" type:MPMediaTypeMovie grouped:NO],
+            [self videoGroupItemWithTitle:@"Music Videos" type:MPMediaTypeMusicVideo grouped:NO],
+            [self videoGroupItemWithTitle:@"TV Shows" type:MPMediaTypeTVShow grouped:YES],
+            [self videoGroupItemWithTitle:@"Video Podcasts" type:MPMediaTypeVideoPodcast grouped:YES],
+            [self videoGroupItemWithTitle:@"Home Videos" type:MPMediaTypeHomeVideo grouped:NO],
+        ];
+    }];
+}
+
+- (IPMenuItem *)videoGroupItemWithTitle:(NSString *)title type:(MPMediaType)type grouped:(BOOL)grouped {
+    return [IPMenuItem itemWithTitle:title hasChildren:YES action:^{
+        MPMediaQuery *q = [MPMediaQuery new];
+        [q addFilterPredicate:[MPMediaPropertyPredicate predicateWithValue:@(type) forProperty:MPMediaItemPropertyMediaType]];
+        if (grouped) {
+            q.groupingType = MPMediaGroupingAlbum;   // one entry per show / season / podcast
+            [self pushMenuWithTitle:title builder:^NSArray<IPMenuItem *> *{
+                NSMutableArray *r = [NSMutableArray array];
+                for (MPMediaItemCollection *c in q.collections) {
+                    MPMediaItem *rep = c.representativeItem;
+                    NSString *name = rep.albumTitle ?: rep.podcastTitle ?: rep.title ?: @"Unknown";
+                    NSArray<MPMediaItem *> *episodes = c.items;
+                    [r addObject:[IPMenuItem itemWithTitle:name hasChildren:YES action:^{
+                        [self pushVideoListWithTitle:name items:episodes queueAll:YES];
+                    }]];
+                }
+                return r;
+            }];
+        } else {
+            [self pushVideoListWithTitle:title items:q.items queueAll:NO];
+        }
+    }];
+}
+
+- (void)pushVideoListWithTitle:(NSString *)title items:(NSArray<MPMediaItem *> *)items queueAll:(BOOL)queueAll {
+    [self pushMenuWithTitle:title builder:^NSArray<IPMenuItem *> *{
+        NSMutableArray *r = [NSMutableArray arrayWithCapacity:items.count];
+        [items enumerateObjectsUsingBlock:^(MPMediaItem *video, NSUInteger i, BOOL *stop) {
+            IPAction play = ^{
+                BOOL ok = queueAll ? [self playItems:items startIndex:i shuffle:NO]
+                                   : [self playItems:@[video] startIndex:0 shuffle:NO];
+                if (ok) [self showNowPlaying];
+            };
+            IPMenuItem *row = [IPMenuItem itemWithTitle:video.title ?: @"Untitled" hasChildren:NO action:play];
+            row.playAction = play;
+            [r addObject:row];
+        }];
+        return r;
+    }];
+}
+
+- (BOOL)currentIsVideo {
+    return (self.currentItem.mediaType & MPMediaTypeAnyVideo) != 0;
+}
+
 #pragma mark - Settings
 
 - (void)pushChecklistMenuTitle:(NSString *)title keys:(NSArray<NSString *> *)keys defaultsKey:(NSString *)defaultsKey {
@@ -555,6 +653,8 @@ static NSString *LetterForTitle(NSString *title) {
         self.coverAlbums = albums;
         self.coverTitles = titles;
         self.coverIndex = 0;
+        self.coverFlowView.albums = albums;
+        [self.coverFlowView snapToIndex:0];
         self.coverFlowActive = YES;
         [self refreshScreen];
     }];
@@ -621,14 +721,16 @@ static NSString *LetterForTitle(NSString *title) {
 - (void)buildOrderStartingAt:(NSInteger)start {
     NSInteger n = (NSInteger)self.queue.count;
     NSMutableArray<NSNumber *> *order = [NSMutableArray arrayWithCapacity:n];
-    if (self.shuffleSetting == MPMusicShuffleModeSongs) {
+    BOOL isVideo = (self.queue[start].mediaType & MPMediaTypeAnyVideo) != 0;
+    MPMusicShuffleMode shuffleMode = isVideo ? MPMusicShuffleModeOff : self.shuffleSetting;
+    if (shuffleMode == MPMusicShuffleModeSongs) {
         NSMutableArray<NSNumber *> *rest = [NSMutableArray array];
         for (NSInteger i = 0; i < n; i++) if (i != start) [rest addObject:@(i)];
         [self shuffleArray:rest];
         [order addObject:@(start)];
         [order addObjectsFromArray:rest];
         self.orderPos = 0;
-    } else if (self.shuffleSetting == MPMusicShuffleModeAlbums) {
+    } else if (shuffleMode == MPMusicShuffleModeAlbums) {
         NSMutableDictionary<NSNumber *, NSMutableArray<NSNumber *> *> *groups = [NSMutableDictionary dictionary];
         NSMutableArray<NSNumber *> *albumKeys = [NSMutableArray array];
         for (NSInteger i = 0; i < n; i++) {
@@ -671,6 +773,7 @@ static NSString *LetterForTitle(NSString *title) {
         [session setCategory:AVAudioSessionCategoryPlayback error:nil];
         [session setActive:YES error:nil];
         self.avPlayer = [AVPlayer new];
+        self.videoView.playerLayer.player = self.avPlayer;
 
         NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
         [nc addObserver:self selector:@selector(itemDidFinish:) name:AVPlayerItemDidPlayToEndTimeNotification object:nil];
@@ -799,6 +902,10 @@ static NSString *LetterForTitle(NSString *title) {
         [self.avPlayer play];
         self.isPlaying = YES;
     }
+    if (self.nowPlayingActive && [self currentIsVideo]) {
+        self.screenView.videoOverlay = YES;
+        [self scheduleBottomModeReset];
+    }
     [self updateNowPlayingInfo];
     [self playbackStateChanged];
 }
@@ -877,6 +984,8 @@ static NSString *LetterForTitle(NSString *title) {
         self.sliderKind = 0;
         self.nowPlayingActive = YES;
         self.screenView.bottomMode = IPBottomModeProgress;
+        self.screenView.videoOverlay = [self currentIsVideo];
+        if ([self currentIsVideo]) [self scheduleBottomModeReset];
         [self updateNowPlaying];
         [self refreshScreen];
     }];
@@ -945,18 +1054,18 @@ static NSString *LetterForTitle(NSString *title) {
         changes();
         return;
     }
-    UIView *old = [self.screenView snapshotViewAfterScreenUpdates:NO];
-    old.frame = self.screenView.frame;
+    UIView *old = [self.contentView snapshotViewAfterScreenUpdates:NO];
+    old.frame = self.contentView.frame;
     [self.lcdContainer addSubview:old];
 
     changes();
 
-    CGFloat w = self.screenView.bounds.size.width;
-    self.screenView.transform = CGAffineTransformMakeTranslation(direction * w, 0);
+    CGFloat w = self.contentView.bounds.size.width;
+    self.contentView.transform = CGAffineTransformMakeTranslation(direction * w, 0);
     [UIView animateWithDuration:0.26 delay:0
                         options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionAllowUserInteraction
                      animations:^{
-        self.screenView.transform = CGAffineTransformIdentity;
+        self.contentView.transform = CGAffineTransformIdentity;
         old.transform = CGAffineTransformMakeTranslation(-direction * w, 0);
     } completion:^(BOOL finished) {
         [old removeFromSuperview];
@@ -983,15 +1092,16 @@ static NSString *LetterForTitle(NSString *title) {
     } else if (self.coverFlowActive) {
         s.mode = IPScreenModeCoverFlow;
         s.title = @"Cover Flow";
-        s.coverItems = self.coverAlbums;
-        s.coverIndex = self.coverIndex;
     } else if (self.nowPlayingActive) {
-        s.mode = IPScreenModeNowPlaying;
+        s.mode = [self currentIsVideo] ? IPScreenModeVideo : IPScreenModeNowPlaying;
         s.title = @"Now Playing";
     } else {
         s.mode = IPScreenModeMenu;
         s.title = m.title;
     }
+    self.videoView.hidden = (s.mode != IPScreenModeVideo);
+    self.coverFlowView.hidden = (s.mode != IPScreenModeCoverFlow);
+    if (s.mode == IPScreenModeCoverFlow) self.coverFlowView.index = self.coverIndex;
     s.previewKind = IPPreviewNone;
     if (s.mode == IPScreenModeMenu && (self.stack.count == 1 || [m.title isEqualToString:@"Music"])) {
         IPMenuItem *sel = (m.selectedIndex < (NSInteger)m.items.count) ? m.items[m.selectedIndex] : nil;
@@ -1045,6 +1155,7 @@ static NSString *LetterForTitle(NSString *title) {
 
 - (void)resetBottomMode {
     self.screenView.bottomMode = IPBottomModeProgress;
+    self.screenView.videoOverlay = NO;
     [self.screenView setNeedsDisplay];
 }
 
@@ -1132,6 +1243,7 @@ static NSString *LetterForTitle(NSString *title) {
     NSString *letter = letters[li];
     *result = self.fastFirst[letter].integerValue;
     self.screenView.overlayLetter = letter;
+    self.coverFlowView.overlayLetter = letter;
     return YES;
 }
 
@@ -1149,6 +1261,7 @@ static NSString *LetterForTitle(NSString *title) {
     if (self.fastScrolling || self.screenView.overlayLetter) {
         self.fastScrolling = NO;
         self.screenView.overlayLetter = nil;
+        self.coverFlowView.overlayLetter = nil;
         [self refreshScreen];
     }
 }
@@ -1221,7 +1334,8 @@ static NSString *LetterForTitle(NSString *title) {
                 break;
             }
         }
-        if (s.bottomMode == IPBottomModeVolume) [self scheduleBottomModeReset];
+        if ([self currentIsVideo]) s.videoOverlay = YES;
+        if (s.bottomMode == IPBottomModeVolume || [self currentIsVideo]) [self scheduleBottomModeReset];
         [self updateNowPlaying];
         [s setNeedsDisplay];
         return;
@@ -1254,6 +1368,11 @@ static NSString *LetterForTitle(NSString *title) {
                     } else if (self.coverFlowActive) {
                         self.coverFlowActive = NO;
                     } else if (self.nowPlayingActive) {
+                        if ([self currentIsVideo] && self.isPlaying) {   // leaving a video pauses it
+                            [self.avPlayer pause];
+                            self.isPlaying = NO;
+                            [self updateNowPlayingInfo];
+                        }
                         self.nowPlayingActive = NO;
                         self.screenView.bottomMode = IPBottomModeProgress;
                     } else if (self.stack.count > 1) {
@@ -1278,6 +1397,12 @@ static NSString *LetterForTitle(NSString *title) {
             } else if (self.nowPlayingActive) {
                 // Press Center repeatedly: scrubber, rating, shuffle, then back to the progress bar
                 [self.bottomModeTimer invalidate];
+                if ([self currentIsVideo]) {   // on a video, Center just shows / hides the scrubber
+                    self.screenView.bottomMode = (self.screenView.bottomMode == IPBottomModeScrub) ? IPBottomModeProgress : IPBottomModeScrub;
+                    self.screenView.videoOverlay = YES;
+                    [self scheduleBottomModeReset];
+                    break;
+                }
                 IPBottomMode next;
                 switch (self.screenView.bottomMode) {
                     case IPBottomModeScrub:   next = IPBottomModeRating; break;
@@ -1341,6 +1466,11 @@ static NSString *LetterForTitle(NSString *title) {
     switch (button) {
         case ClickWheelButtonMenu: { // press and hold Menu: straight to the main menu
             [self click];
+            if (self.nowPlayingActive && [self currentIsVideo] && self.isPlaying) {
+                [self.avPlayer pause];
+                self.isPlaying = NO;
+                [self updateNowPlayingInfo];
+            }
             [self slideScreen:-1 changes:^{
                 self.nowPlayingActive = NO;
                 self.coverFlowActive = NO;

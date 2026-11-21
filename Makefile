@@ -7,7 +7,7 @@ include $(THEOS)/makefiles/common.mk
 
 APPLICATION_NAME = ClassicPod
 
-ClassicPod_FILES = main.m IPodViewController.m IPScreenView.m ClickWheelView.m IPMenu.m
+ClassicPod_FILES = main.m IPodViewController.m IPScreenView.m ClickWheelView.m IPMenu.m IPCoverFlowView.m
 ClassicPod_FRAMEWORKS = UIKit CoreGraphics QuartzCore MediaPlayer AVFoundation AudioToolbox
 ClassicPod_CFLAGS = -fobjc-arc
 ClassicPod_CODESIGN_FLAGS = -Sents.plist

@@ -66,6 +66,14 @@ static NSString *TimeString(NSTimeInterval t) {
     return self;
 }
 
+- (void)setMode:(IPScreenMode)mode {
+    _mode = mode;
+    BOOL video = (mode == IPScreenModeVideo);   // transparent so the video shows through
+    self.opaque = !video;
+    self.backgroundColor = video ? [UIColor clearColor] : [UIColor whiteColor];
+    [self setNeedsDisplay];
+}
+
 - (void)setCoverItems:(NSArray<MPMediaItemCollection *> *)items {
     if (_coverItems == items) return;
     _coverItems = items;
@@ -163,12 +171,17 @@ static NSString *TimeString(NSTimeInterval t) {
 - (void)drawRect:(CGRect)rect {
     CGContextRef ctx = UIGraphicsGetCurrentContext();
     CGRect b = self.bounds;
+    if (self.mode == IPScreenModeVideo) {
+        CGContextClearRect(ctx, b);
+        [self drawVideoOverlayInRect:b];
+        return;
+    }
     [[UIColor whiteColor] setFill];
     UIRectFill(b);
 
-    if (self.mode == IPScreenModeCoverFlow) {   // Cover Flow fills the whole screen, no title bar
-        [self drawCoverFlowInRect:b ctx:ctx];
-        [self drawOverlayInRect:b];
+    if (self.mode == IPScreenModeCoverFlow) {   // the 3D Cover Flow view covers this; keep it black underneath
+        [[UIColor blackColor] setFill];
+        UIRectFill(b);
         return;
     }
 
@@ -544,6 +557,60 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
         [self drawText:TimeString(self.elapsed) inRect:labelRow font:small color:gray align:NSTextAlignmentLeft];
         [self drawText:[@"-" stringByAppendingString:TimeString(self.duration - self.elapsed)]
                 inRect:labelRow font:small color:gray align:NSTextAlignmentRight];
+    }
+}
+
+#pragma mark - Video overlay
+
+- (void)drawVideoOverlayInRect:(CGRect)b {
+    if (!self.videoOverlay || !self.nowPlayingItem) return;
+    CGFloat w = b.size.width, h = b.size.height, pad = 14;
+    CGRect panel = CGRectMake(0, h * 0.70, w, h * 0.30);
+    [[UIColor colorWithWhite:0 alpha:0.65] setFill];
+    UIRectFill(panel);
+
+    CGFloat lh = panel.size.height / 3.0;
+    [self drawText:self.nowPlayingItem.title ?: @"" inRect:CGRectMake(pad, panel.origin.y + 2, w - 2 * pad, lh)
+              font:IPBoldFont(lh * 0.62) color:[UIColor whiteColor] align:NSTextAlignmentCenter];
+
+    CGRect bar = CGRectMake(pad, panel.origin.y + lh + 4, w - 2 * pad, 9);
+    if (self.bottomMode == IPBottomModeVolume) {
+        bar.origin.x = pad + 18;
+        bar.size.width = w - 2 * pad - 38;
+    }
+    UIBezierPath *track = [UIBezierPath bezierPathWithRoundedRect:bar cornerRadius:4.5];
+    [[UIColor colorWithWhite:0.35 alpha:1.0] setFill];
+    [track fill];
+
+    CGFloat frac = (self.bottomMode == IPBottomModeVolume) ? self.volume : (self.duration > 0 ? self.elapsed / self.duration : 0);
+    frac = MAX(0, MIN(1, frac));
+    if (frac > 0) {
+        CGRect fill = bar;
+        fill.size.width = MAX(fill.size.height, fill.size.width * frac);
+        [[UIColor colorWithRed:0.20 green:0.55 blue:0.95 alpha:1.0] setFill];
+        [[UIBezierPath bezierPathWithRoundedRect:fill cornerRadius:fill.size.height / 2.0] fill];
+    }
+
+    if (self.bottomMode == IPBottomModeVolume) {
+        DrawSpeaker(CGPointMake(pad + 6, CGRectGetMidY(bar)), 9, NO, [UIColor whiteColor]);
+        DrawSpeaker(CGPointMake(w - pad - 12, CGRectGetMidY(bar)), 13, YES, [UIColor whiteColor]);
+    } else {
+        if (self.bottomMode == IPBottomModeScrub) {
+            CGFloat dx = bar.origin.x + bar.size.width * frac, dy = CGRectGetMidY(bar);
+            UIBezierPath *diamond = [UIBezierPath bezierPath];
+            [diamond moveToPoint:CGPointMake(dx, dy - 8)];
+            [diamond addLineToPoint:CGPointMake(dx + 6, dy)];
+            [diamond addLineToPoint:CGPointMake(dx, dy + 8)];
+            [diamond addLineToPoint:CGPointMake(dx - 6, dy)];
+            [diamond closePath];
+            [[UIColor whiteColor] setFill];
+            [diamond fill];
+        }
+        CGRect times = CGRectMake(pad, CGRectGetMaxY(bar) + 3, w - 2 * pad, lh);
+        UIFont *small = IPRegularFont(lh * 0.52);
+        [self drawText:TimeString(self.elapsed) inRect:times font:small color:[UIColor whiteColor] align:NSTextAlignmentLeft];
+        [self drawText:[@"-" stringByAppendingString:TimeString(self.duration - self.elapsed)]
+                inRect:times font:small color:[UIColor whiteColor] align:NSTextAlignmentRight];
     }
 }
 

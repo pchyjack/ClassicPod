@@ -6,7 +6,8 @@ typedef NS_ENUM(NSInteger, IPScreenMode) {
     IPScreenModeMenu,
     IPScreenModeNowPlaying,
     IPScreenModeCoverFlow,
-    IPScreenModeSlider
+    IPScreenModeSlider,
+    IPScreenModeVideo
 };
 
 typedef NS_ENUM(NSInteger, IPBottomMode) {
@@ -46,6 +47,7 @@ typedef NS_ENUM(NSInteger, IPPreviewKind) {
 @property (nonatomic) NSInteger queueCount;
 @property (nonatomic) float volume;           // 0...1, shown in IPBottomModeVolume
 @property (nonatomic) IPBottomMode bottomMode;
+@property (nonatomic) BOOL videoOverlay;   // title + progress bar over a playing video
 @property (nonatomic) MPMusicShuffleMode shuffleMode; // shuffle icon on Now Playing
 @property (nonatomic) MPMusicRepeatMode repeatMode;     // repeat / repeat-once icon
 @property (nonatomic) NSInteger rating;                  // 0...5 stars
