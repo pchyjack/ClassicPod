@@ -1339,7 +1339,7 @@ static NSString *LetterForTitle(NSString *title) {
 
 - (void)clickWheel:(ClickWheelView *)wheel didHoldButton:(ClickWheelButton)button {
     switch (button) {
-        case ClickWheelButtonMenu: // press and hold Menu: straight to the main menu
+        case ClickWheelButtonMenu: { // press and hold Menu: straight to the main menu
             [self click];
             [self slideScreen:-1 changes:^{
                 self.nowPlayingActive = NO;
@@ -1350,6 +1350,7 @@ static NSString *LetterForTitle(NSString *title) {
                 [self refreshScreen];
             }];
             break;
+        }
         case ClickWheelButtonNext:     [self startSeeking:1]; break;
         case ClickWheelButtonPrevious: [self startSeeking:-1]; break;
         case ClickWheelButtonCenter:
