@@ -60,6 +60,8 @@ static NSString *LetterForTitle(NSString *title) {
 @property (nonatomic, strong) UIView *screenFrame;
 @property (nonatomic, strong) IPScreenView *screenView;
 @property (nonatomic, strong) UIView *dimView;                    // brightness / backlight
+@property (nonatomic, strong) UIView *lcdContainer;               // clips the LCD while menus slide
+@property (nonatomic, strong) CAGradientLayer *glossLayer;        // glass reflection
 @property (nonatomic, strong) ClickWheelView *wheel;
 @property (nonatomic, strong) MPVolumeView *volumeView;
 @property (nonatomic, strong) AVPlayer *avPlayer;                 // plays the songs' file URLs in-process
@@ -125,16 +127,19 @@ static NSString *LetterForTitle(NSString *title) {
     [self.view.layer addSublayer:self.backgroundLayer];
 
     self.screenFrame = [UIView new];
-    self.screenFrame.backgroundColor = [UIColor colorWithWhite:0.16 alpha:1.0];
-    self.screenFrame.layer.cornerRadius = 6;
+    self.screenFrame.backgroundColor = [UIColor colorWithWhite:0.07 alpha:1.0];   // black bezel
+    self.screenFrame.layer.cornerRadius = 8;
     self.screenFrame.layer.borderWidth = 1;
-    self.screenFrame.layer.borderColor = [UIColor colorWithWhite:0.62 alpha:1.0].CGColor;
+    self.screenFrame.layer.borderColor = [UIColor colorWithWhite:0.50 alpha:1.0].CGColor;
     [self.view addSubview:self.screenFrame];
 
+    self.lcdContainer = [UIView new];
+    self.lcdContainer.clipsToBounds = YES;
+    self.lcdContainer.layer.cornerRadius = 2;
+    [self.screenFrame addSubview:self.lcdContainer];
+
     self.screenView = [IPScreenView new];
-    self.screenView.layer.cornerRadius = 2;
-    self.screenView.layer.masksToBounds = YES;
-    [self.screenFrame addSubview:self.screenView];
+    [self.lcdContainer addSubview:self.screenView];
 
     self.dimView = [UIView new];
     self.dimView.backgroundColor = [UIColor blackColor];
@@ -142,6 +147,14 @@ static NSString *LetterForTitle(NSString *title) {
     self.dimView.userInteractionEnabled = NO;
     self.dimView.layer.cornerRadius = 2;
     [self.screenFrame addSubview:self.dimView];
+
+    self.glossLayer = [CAGradientLayer layer];
+    self.glossLayer.colors = @[(id)[UIColor colorWithWhite:1.0 alpha:0.12].CGColor,
+                               (id)[UIColor colorWithWhite:1.0 alpha:0.0].CGColor];
+    self.glossLayer.startPoint = CGPointMake(0.0, 0.0);
+    self.glossLayer.endPoint = CGPointMake(0.7, 0.8);
+    self.glossLayer.cornerRadius = 2;
+    [self.screenFrame.layer addSublayer:self.glossLayer];
 
     self.wheel = [ClickWheelView new];
     self.wheel.delegate = self;
@@ -180,14 +193,20 @@ static NSString *LetterForTitle(NSString *title) {
     self.backgroundLayer.frame = b;
     [CATransaction commit];
 
-    CGFloat margin = 14;
+    CGFloat margin = 12;
+    CGFloat bezel = 7;
     CGFloat frameW = b.size.width - 2 * margin;
-    CGFloat screenW = frameW - 8;
+    CGFloat screenW = frameW - 2 * bezel;
     CGFloat screenH = round(screenW * 0.75);   // 4:3 LCD
-    CGFloat frameH = screenH + 8;
+    CGFloat frameH = screenH + 2 * bezel;
     self.screenFrame.frame = CGRectMake(margin, safe.top + margin, frameW, frameH);
-    self.screenView.frame = CGRectMake(4, 4, screenW, screenH);
-    self.dimView.frame = self.screenView.frame;
+    self.lcdContainer.frame = CGRectMake(bezel, bezel, screenW, screenH);
+    if (CGAffineTransformIsIdentity(self.screenView.transform)) self.screenView.frame = self.lcdContainer.bounds;
+    self.dimView.frame = self.lcdContainer.frame;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    self.glossLayer.frame = self.lcdContainer.frame;
+    [CATransaction commit];
 
     CGFloat availTop = CGRectGetMaxY(self.screenFrame.frame) + 10;
     CGFloat avail = b.size.height - safe.bottom - availTop - 10;
@@ -221,16 +240,20 @@ static NSString *LetterForTitle(NSString *title) {
 }
 
 - (void)pushMenuWithTitle:(NSString *)title builder:(IPBuilder)builder {
-    self.nowPlayingActive = NO;
-    self.coverFlowActive = NO;
-    self.sliderKind = 0;
-    [self.stack addObject:[IPMenu menuWithTitle:title builder:builder]];
-    [self refreshScreen];
+    [self slideScreen:1 changes:^{
+        self.nowPlayingActive = NO;
+        self.coverFlowActive = NO;
+        self.sliderKind = 0;
+        [self.stack addObject:[IPMenu menuWithTitle:title builder:builder]];
+        [self refreshScreen];
+    }];
 }
 
 - (void)popMenu {
-    if (self.stack.count > 1) [self.stack removeLastObject];
-    [self refreshScreen];
+    [self slideScreen:-1 changes:^{
+        if (self.stack.count > 1) [self.stack removeLastObject];
+        [self refreshScreen];
+    }];
 }
 
 // One row of the Main menu / Music menu.
@@ -517,20 +540,24 @@ static NSString *LetterForTitle(NSString *title) {
 }
 
 - (void)showSlider:(NSInteger)kind {
-    self.sliderKind = kind;
-    self.coverFlowActive = NO;
-    [self refreshScreen];
+    [self slideScreen:1 changes:^{
+        self.sliderKind = kind;
+        self.coverFlowActive = NO;
+        [self refreshScreen];
+    }];
 }
 
 - (void)showCoverFlow {
     NSArray<MPMediaItemCollection *> *albums = [MPMediaQuery albumsQuery].collections;
     NSMutableArray *titles = [NSMutableArray arrayWithCapacity:albums.count];
     for (MPMediaItemCollection *c in albums) [titles addObject:c.representativeItem.albumTitle ?: @""];
-    self.coverAlbums = albums;
-    self.coverTitles = titles;
-    self.coverIndex = 0;
-    self.coverFlowActive = YES;
-    [self refreshScreen];
+    [self slideScreen:1 changes:^{
+        self.coverAlbums = albums;
+        self.coverTitles = titles;
+        self.coverIndex = 0;
+        self.coverFlowActive = YES;
+        [self refreshScreen];
+    }];
 }
 
 - (void)reloadTopMenu {
@@ -845,12 +872,14 @@ static NSString *LetterForTitle(NSString *title) {
 
 - (void)showNowPlaying {
     if (!self.currentItem) return;
-    self.coverFlowActive = NO;
-    self.sliderKind = 0;
-    self.nowPlayingActive = YES;
-    self.screenView.bottomMode = IPBottomModeProgress;
-    [self updateNowPlaying];
-    [self refreshScreen];
+    [self slideScreen:(self.nowPlayingActive ? 0 : 1) changes:^{
+        self.coverFlowActive = NO;
+        self.sliderKind = 0;
+        self.nowPlayingActive = YES;
+        self.screenView.bottomMode = IPBottomModeProgress;
+        [self updateNowPlaying];
+        [self refreshScreen];
+    }];
 }
 
 #pragma mark - Ratings (stored in this app; iOS has no public API to change a song's rating)
@@ -908,6 +937,31 @@ static NSString *LetterForTitle(NSString *title) {
 }
 
 #pragma mark - Screen updates
+
+// The iPod classic slides its screens sideways: new screens push in from the right (+1),
+// going back slides them out to the right (-1).
+- (void)slideScreen:(NSInteger)direction changes:(void (^)(void))changes {
+    if (direction == 0 || UIAccessibilityIsReduceMotionEnabled()) {
+        changes();
+        return;
+    }
+    UIView *old = [self.screenView snapshotViewAfterScreenUpdates:NO];
+    old.frame = self.screenView.frame;
+    [self.lcdContainer addSubview:old];
+
+    changes();
+
+    CGFloat w = self.screenView.bounds.size.width;
+    self.screenView.transform = CGAffineTransformMakeTranslation(direction * w, 0);
+    [UIView animateWithDuration:0.26 delay:0
+                        options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionAllowUserInteraction
+                     animations:^{
+        self.screenView.transform = CGAffineTransformIdentity;
+        old.transform = CGAffineTransformMakeTranslation(-direction * w, 0);
+    } completion:^(BOOL finished) {
+        [old removeFromSuperview];
+    }];
+}
 
 - (void)refreshScreen {
     IPMenu *m = self.stack.lastObject;
@@ -1193,19 +1247,23 @@ static NSString *LetterForTitle(NSString *title) {
     [self click];
     switch (button) {
         case ClickWheelButtonMenu:
-            if (self.sliderKind) {
-                self.sliderKind = 0;
-            } else if (self.coverFlowActive) {
-                self.coverFlowActive = NO;
-            } else if (self.nowPlayingActive) {
-                self.nowPlayingActive = NO;
-                self.screenView.bottomMode = IPBottomModeProgress;
-            } else if (self.stack.count > 1) {
-                IPMenu *popped = self.stack.lastObject;
-                [self.stack removeLastObject];
-                if (popped.returnsToCoverFlow && self.coverAlbums.count > 0) self.coverFlowActive = YES;
+            if (self.sliderKind || self.coverFlowActive || self.nowPlayingActive || self.stack.count > 1) {
+                [self slideScreen:-1 changes:^{
+                    if (self.sliderKind) {
+                        self.sliderKind = 0;
+                    } else if (self.coverFlowActive) {
+                        self.coverFlowActive = NO;
+                    } else if (self.nowPlayingActive) {
+                        self.nowPlayingActive = NO;
+                        self.screenView.bottomMode = IPBottomModeProgress;
+                    } else if (self.stack.count > 1) {
+                        IPMenu *popped = self.stack.lastObject;
+                        [self.stack removeLastObject];
+                        if (popped.returnsToCoverFlow && self.coverAlbums.count > 0) self.coverFlowActive = YES;
+                    }
+                    [self refreshScreen];
+                }];
             }
-            [self refreshScreen];
             break;
 
         case ClickWheelButtonCenter:
@@ -1283,12 +1341,14 @@ static NSString *LetterForTitle(NSString *title) {
     switch (button) {
         case ClickWheelButtonMenu: // press and hold Menu: straight to the main menu
             [self click];
-            self.nowPlayingActive = NO;
-            self.coverFlowActive = NO;
-            self.sliderKind = 0;
-            self.screenView.bottomMode = IPBottomModeProgress;
-            if (self.stack.count > 1) [self.stack removeObjectsInRange:NSMakeRange(1, self.stack.count - 1)];
-            [self refreshScreen];
+            [self slideScreen:-1 changes:^{
+                self.nowPlayingActive = NO;
+                self.coverFlowActive = NO;
+                self.sliderKind = 0;
+                self.screenView.bottomMode = IPBottomModeProgress;
+                if (self.stack.count > 1) [self.stack removeObjectsInRange:NSMakeRange(1, self.stack.count - 1)];
+                [self refreshScreen];
+            }];
             break;
         case ClickWheelButtonNext:     [self startSeeking:1]; break;
         case ClickWheelButtonPrevious: [self startSeeking:-1]; break;

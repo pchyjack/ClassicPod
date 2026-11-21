@@ -3,6 +3,38 @@
 
 static const NSInteger kVisibleRows = 8;
 
+// The iPod classic's menus use a bold Helvetica-style face.
+static UIFont *IPBoldFont(CGFloat size) {
+    return [UIFont fontWithName:@"HelveticaNeue-Bold" size:size] ?: [UIFont boldSystemFontOfSize:size];
+}
+static UIFont *IPRegularFont(CGFloat size) {
+    return [UIFont fontWithName:@"HelveticaNeue" size:size] ?: [UIFont systemFontOfSize:size];
+}
+
+static void DrawSpeaker(CGPoint c, CGFloat s, BOOL waves, UIColor *color) {
+    [color setFill];
+    [color setStroke];
+    UIBezierPath *p = [UIBezierPath bezierPath];
+    [p moveToPoint:CGPointMake(c.x - s * 0.55, c.y - s * 0.18)];
+    [p addLineToPoint:CGPointMake(c.x - s * 0.25, c.y - s * 0.18)];
+    [p addLineToPoint:CGPointMake(c.x + s * 0.10, c.y - s * 0.48)];
+    [p addLineToPoint:CGPointMake(c.x + s * 0.10, c.y + s * 0.48)];
+    [p addLineToPoint:CGPointMake(c.x - s * 0.25, c.y + s * 0.18)];
+    [p addLineToPoint:CGPointMake(c.x - s * 0.55, c.y + s * 0.18)];
+    [p closePath];
+    [p fill];
+    if (waves) {
+        for (NSInteger k = 1; k <= 2; k++) {
+            UIBezierPath *arc = [UIBezierPath bezierPathWithArcCenter:CGPointMake(c.x + s * 0.10, c.y)
+                                                               radius:s * (0.28 * k + 0.10)
+                                                           startAngle:-M_PI / 4 endAngle:M_PI / 4 clockwise:YES];
+            arc.lineWidth = s * 0.10;
+            arc.lineCapStyle = kCGLineCapRound;
+            [arc stroke];
+        }
+    }
+}
+
 static NSString *TimeString(NSTimeInterval t) {
     NSInteger s = (NSInteger)MAX(0, t);
     return [NSString stringWithFormat:@"%ld:%02ld", (long)(s / 60), (long)(s % 60)];
@@ -161,7 +193,7 @@ static NSString *TimeString(NSTimeInterval t) {
     UIRectFill(CGRectMake(0, CGRectGetMaxY(r) - 1, r.size.width, 1));
 
     // Title on the left, like the real iPod classic
-    UIFont *font = [UIFont systemFontOfSize:r.size.height * 0.62 weight:UIFontWeightBold];
+    UIFont *font = IPBoldFont(r.size.height * 0.62);
     [self drawText:self.title inRect:CGRectMake(8, r.origin.y, r.size.width - 84, r.size.height)
               font:font color:[UIColor blackColor] align:NSTextAlignmentLeft];
 
@@ -209,7 +241,7 @@ static NSString *TimeString(NSTimeInterval t) {
 
     BOOL needsScrollBar = n > kVisibleRows;
     CGFloat rightEdge = listW - (needsScrollBar ? 12 : 0);
-    UIFont *font = [UIFont systemFontOfSize:rowH * 0.64 weight:UIFontWeightBold];
+    UIFont *font = IPBoldFont(rowH * 0.66);
 
     for (NSInteger i = 0; i < kVisibleRows; i++) {
         NSInteger idx = self.topIndex + i;
@@ -344,7 +376,7 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
     } else {
         [[UIColor colorWithWhite:0.15 alpha:1.0] setFill];
         UIRectFill(r);
-        [self drawText:@"\u266A" inRect:r font:[UIFont systemFontOfSize:r.size.width * 0.5 weight:UIFontWeightRegular]
+        [self drawText:@"\u266A" inRect:r font:IPRegularFont(r.size.width * 0.5)
                  color:[UIColor colorWithWhite:0.45 alpha:1.0] align:NSTextAlignmentCenter];
     }
     CGContextRestoreGState(ctx);
@@ -360,7 +392,7 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
 
     if (!item) {
         [self drawText:@"Nothing Playing" inRect:body
-                  font:[UIFont systemFontOfSize:15 weight:UIFontWeightMedium]
+                  font:IPRegularFont(15)
                  color:[UIColor grayColor] align:NSTextAlignmentCenter];
         return;
     }
@@ -370,7 +402,7 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
     if (self.queueIndex >= 0 && self.queueCount > 0 && self.queueIndex < self.queueCount) {
         NSString *pos = [NSString stringWithFormat:@"%ld of %ld", (long)self.queueIndex + 1, (long)self.queueCount];
         [self drawText:pos inRect:CGRectMake(0, body.origin.y + 2, w, lh)
-                  font:[UIFont systemFontOfSize:lh * 0.62 weight:UIFontWeightMedium]
+                  font:IPRegularFont(lh * 0.62)
                  color:[UIColor colorWithWhite:0.4 alpha:1.0] align:NSTextAlignmentCenter];
     }
 
@@ -380,7 +412,7 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
     if (self.repeatMode == MPMusicRepeatModeAll) flags = [flags stringByAppendingString:@" \u21BB"];
     else if (self.repeatMode == MPMusicRepeatModeOne) flags = [flags stringByAppendingString:@" \u21BB1"];
     [self drawText:flags inRect:CGRectMake(0, body.origin.y + 2, w - pad, lh)
-              font:[UIFont systemFontOfSize:lh * 0.70 weight:UIFontWeightBold]
+              font:IPBoldFont(lh * 0.70)
              color:[UIColor colorWithWhite:0.25 alpha:1.0] align:NSTextAlignmentRight];
 
     // Artwork
@@ -392,7 +424,7 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
         [[UIColor colorWithWhite:0.90 alpha:1.0] setFill];
         UIRectFill(artRect);
         [self drawText:@"\u266A" inRect:artRect
-                  font:[UIFont systemFontOfSize:art * 0.5 weight:UIFontWeightRegular]
+                  font:IPRegularFont(art * 0.5)
                  color:[UIColor colorWithWhite:0.55 alpha:1.0] align:NSTextAlignmentCenter];
     }
     [[UIColor colorWithWhite:0.65 alpha:1.0] setStroke];
@@ -405,13 +437,13 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
     CGFloat tw = w - tx - pad;
     CGFloat th = art / 3.0;
     [self drawText:item.title ?: @"Unknown Song" inRect:CGRectMake(tx, artRect.origin.y, tw, th)
-              font:[UIFont systemFontOfSize:lh * 0.72 weight:UIFontWeightBold]
+              font:IPBoldFont(lh * 0.72)
              color:[UIColor blackColor] align:NSTextAlignmentLeft];
     [self drawText:item.artist ?: @"Unknown Artist" inRect:CGRectMake(tx, artRect.origin.y + th, tw, th)
-              font:[UIFont systemFontOfSize:lh * 0.66 weight:UIFontWeightRegular]
+              font:IPRegularFont(lh * 0.66)
              color:[UIColor colorWithWhite:0.2 alpha:1.0] align:NSTextAlignmentLeft];
     [self drawText:item.albumTitle ?: @"Unknown Album" inRect:CGRectMake(tx, artRect.origin.y + 2 * th, tw, th)
-              font:[UIFont systemFontOfSize:lh * 0.62 weight:UIFontWeightRegular]
+              font:IPRegularFont(lh * 0.62)
              color:[UIColor colorWithWhite:0.45 alpha:1.0] align:NSTextAlignmentLeft];
 
     CGFloat optY = CGRectGetMaxY(body) - lh * 2.2;
@@ -419,7 +451,7 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
     if (self.rating > 0 && self.bottomMode != IPBottomModeRating) {
         NSString *stars = [@"" stringByPaddingToLength:(NSUInteger)MIN(5, self.rating) withString:@"\u2605" startingAtIndex:0];
         [self drawText:stars inRect:CGRectMake(tx, CGRectGetMaxY(artRect) + 2, tw, lh)
-                  font:[UIFont systemFontOfSize:lh * 0.8 weight:UIFontWeightRegular]
+                  font:IPRegularFont(lh * 0.8)
                  color:[UIColor colorWithRed:0.20 green:0.50 blue:0.92 alpha:1.0] align:NSTextAlignmentLeft];
     }
 
@@ -428,10 +460,10 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
         NSString *filled = [@"" stringByPaddingToLength:(NSUInteger)r withString:@"\u2605" startingAtIndex:0];
         NSString *empty = [@"" stringByPaddingToLength:(NSUInteger)(5 - r) withString:@"\u2606" startingAtIndex:0];
         [self drawText:[filled stringByAppendingString:empty] inRect:CGRectMake(0, optY - 6, w, lh * 1.5)
-                  font:[UIFont systemFontOfSize:lh * 1.2 weight:UIFontWeightRegular]
+                  font:IPRegularFont(lh * 1.2)
                  color:[UIColor colorWithRed:0.20 green:0.50 blue:0.92 alpha:1.0] align:NSTextAlignmentCenter];
         [self drawText:@"Rating" inRect:CGRectMake(pad, optY + lh * 1.3, w - 2 * pad, lh)
-                  font:[UIFont systemFontOfSize:lh * 0.62 weight:UIFontWeightMedium]
+                  font:IPRegularFont(lh * 0.62)
                  color:[UIColor colorWithWhite:0.3 alpha:1.0] align:NSTextAlignmentCenter];
         return;
     }
@@ -445,11 +477,11 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
             UIBezierPath *sp = [UIBezierPath bezierPathWithRoundedRect:seg cornerRadius:4];
             [(i == selected ? [UIColor colorWithRed:0.20 green:0.50 blue:0.92 alpha:1.0] : [UIColor colorWithWhite:0.90 alpha:1.0]) setFill];
             [sp fill];
-            [self drawText:names[i] inRect:seg font:[UIFont systemFontOfSize:lh * 0.66 weight:UIFontWeightSemibold]
+            [self drawText:names[i] inRect:seg font:IPBoldFont(lh * 0.66)
                      color:(i == selected ? [UIColor whiteColor] : [UIColor blackColor]) align:NSTextAlignmentCenter];
         }
         [self drawText:@"Shuffle" inRect:CGRectMake(pad, optY + lh * 1.3, w - 2 * pad, lh)
-                  font:[UIFont systemFontOfSize:lh * 0.62 weight:UIFontWeightMedium]
+                  font:IPRegularFont(lh * 0.62)
                  color:[UIColor colorWithWhite:0.3 alpha:1.0] align:NSTextAlignmentCenter];
         return;
     }
@@ -457,6 +489,10 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
     // Progress / volume bar
     CGFloat barY = CGRectGetMaxY(body) - lh * 2.2;
     CGRect bar = CGRectMake(pad, barY, w - 2 * pad, 11);
+    if (self.bottomMode == IPBottomModeVolume) {   // leave room for the speaker icons
+        bar.origin.x = pad + 18;
+        bar.size.width = w - 2 * pad - 38;
+    }
     UIBezierPath *track = [UIBezierPath bezierPathWithRoundedRect:bar cornerRadius:5.5];
     [[UIColor colorWithWhite:0.90 alpha:1.0] setFill];
     [track fill];
@@ -480,6 +516,12 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
         [fp fill];
     }
 
+    if (self.bottomMode == IPBottomModeVolume) {
+        UIColor *iconColor = [UIColor colorWithWhite:0.25 alpha:1.0];
+        DrawSpeaker(CGPointMake(pad + 6, CGRectGetMidY(bar)), 9, NO, iconColor);
+        DrawSpeaker(CGPointMake(w - pad - 12, CGRectGetMidY(bar)), 13, YES, iconColor);
+    }
+
     if (self.bottomMode == IPBottomModeScrub) {
         CGFloat dx = bar.origin.x + bar.size.width * frac;
         CGFloat dy = CGRectGetMidY(bar);
@@ -494,10 +536,10 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
     }
 
     CGRect labelRow = CGRectMake(pad, CGRectGetMaxY(bar) + 3, w - 2 * pad, lh);
-    UIFont *small = [UIFont systemFontOfSize:lh * 0.62 weight:UIFontWeightMedium];
+    UIFont *small = IPRegularFont(lh * 0.62);
     UIColor *gray = [UIColor colorWithWhite:0.3 alpha:1.0];
     if (self.bottomMode == IPBottomModeVolume) {
-        [self drawText:@"Volume" inRect:labelRow font:small color:gray align:NSTextAlignmentCenter];
+        // the speaker icons already say "volume"
     } else {
         [self drawText:TimeString(self.elapsed) inRect:labelRow font:small color:gray align:NSTextAlignmentLeft];
         [self drawText:[@"-" stringByAppendingString:TimeString(self.duration - self.elapsed)]
@@ -510,7 +552,7 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
 - (void)drawSliderInRect:(CGRect)body ctx:(CGContextRef)ctx {
     CGFloat w = body.size.width, pad = 24;
     [self drawText:self.sliderCaption inRect:CGRectMake(0, CGRectGetMidY(body) - 46, w, 24)
-              font:[UIFont systemFontOfSize:15 weight:UIFontWeightBold]
+              font:IPBoldFont(15)
              color:[UIColor blackColor] align:NSTextAlignmentCenter];
 
     CGRect bar = CGRectMake(pad, CGRectGetMidY(body) - 6, w - 2 * pad, 12);
@@ -588,7 +630,7 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
 
     NSInteger n = (NSInteger)self.coverItems.count;
     if (n == 0) {
-        [self drawText:@"No Albums" inRect:body font:[UIFont systemFontOfSize:15 weight:UIFontWeightMedium]
+        [self drawText:@"No Albums" inRect:body font:IPRegularFont(15)
                  color:[UIColor lightGrayColor] align:NSTextAlignmentCenter];
         return;
     }
@@ -628,11 +670,11 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
     CGFloat lineH = h * 0.10;
     [self drawText:rep.albumTitle ?: @"Unknown Album"
             inRect:CGRectMake(8, CGRectGetMaxY(body) - lineH * 2 - 2, w - 16, lineH)
-              font:[UIFont systemFontOfSize:lineH * 0.78 weight:UIFontWeightBold]
+              font:IPBoldFont(lineH * 0.78)
              color:[UIColor whiteColor] align:NSTextAlignmentCenter];
     [self drawText:rep.artist ?: @"Unknown Artist"
             inRect:CGRectMake(8, CGRectGetMaxY(body) - lineH - 2, w - 16, lineH)
-              font:[UIFont systemFontOfSize:lineH * 0.70 weight:UIFontWeightRegular]
+              font:IPRegularFont(lineH * 0.70)
              color:[UIColor colorWithWhite:0.7 alpha:1.0] align:NSTextAlignmentCenter];
 }
 
@@ -642,7 +684,7 @@ static void DrawShuffleGlyph(CGPoint c, CGFloat s, UIColor *color) {
     CGRect box = CGRectMake(CGRectGetMidX(area) - s / 2.0, CGRectGetMidY(area) - s / 2.0, s, s);
     [[UIColor colorWithWhite:0.1 alpha:0.78] setFill];
     [[UIBezierPath bezierPathWithRoundedRect:box cornerRadius:s * 0.12] fill];
-    [self drawText:self.overlayLetter inRect:box font:[UIFont systemFontOfSize:s * 0.7 weight:UIFontWeightBold]
+    [self drawText:self.overlayLetter inRect:box font:IPBoldFont(s * 0.7)
              color:[UIColor whiteColor] align:NSTextAlignmentCenter];
 }
 
